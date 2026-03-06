@@ -1,6 +1,8 @@
 use anyhow::{Context, Result, anyhow, ensure};
 use inquire::{Confirm, Password};
 use log::{debug, info, warn};
+use nix::sys::signal::kill;
+use nix::unistd::Pid;
 use serde::Deserialize;
 use std::{
     fs,
@@ -10,9 +12,7 @@ use std::{
 
 use crate::{
     define_litterbox, env, extract_stdout,
-    files::{
-        SshSockFile, dockerfile_path, lbx_home_path, litterbox_binary_path, pipewire_socket_path,
-    },
+    files::{self, SshSockFile},
     gen_random_name,
     keys::Keys,
     settings::LitterboxSettings,
@@ -178,23 +178,6 @@ pub fn is_container_running(lbx_name: &str) -> Result<bool> {
     Ok(!containers.0.is_empty())
 }
 
-pub fn any_remaining_pts_processes(container_id: &str) -> Result<bool> {
-    let output = Command::new("podman")
-        .args(["top", container_id])
-        .output()
-        .context("Failed to run podman command")?;
-
-    let stdout = extract_stdout(&output)?;
-
-    for line in stdout.lines() {
-        if line.contains("pts/") {
-            return Ok(true);
-        }
-    }
-
-    Ok(false)
-}
-
 pub fn stop_container(container_id: &str) -> Result<()> {
     let child = Command::new("podman")
         .args(["stop", container_id])
@@ -235,7 +218,7 @@ pub fn build_image(lbx_name: &str, user: &str) -> Result<()> {
         None => gen_random_name(),
     };
 
-    let dockerfile_path = dockerfile_path(lbx_name)?;
+    let dockerfile_path = files::dockerfile_path(lbx_name)?;
     if !dockerfile_path.exists() {
         println!(
             "{} does not exist. Please make one or a use a provided template.",
@@ -308,7 +291,7 @@ pub fn build_litterbox(lbx_name: &str, user: &str) -> Result<()> {
     let wayland_display = env::wayland_display()?;
     let xdg_runtime_dir = env::xdg_runtime_dir()?;
 
-    let litterbox_home = lbx_home_path(lbx_name)?;
+    let litterbox_home = files::lbx_home_path(lbx_name)?;
     fs::create_dir_all(&litterbox_home).context("Failed to create litterbox home directory")?;
 
     let ssh_sock = SshSockFile::new(lbx_name, true)?;
@@ -395,7 +378,7 @@ pub fn build_litterbox(lbx_name: &str, user: &str) -> Result<()> {
         full_args.extend_from_slice(&["--device", "/dev/kvm"]);
     }
 
-    let pipewire_path = pipewire_socket_path()?;
+    let pipewire_path = files::pipewire_socket_path()?;
     let pipewire_path = pipewire_path.to_str().expect("Path should be valid string");
     let pipewire_socket_mount = format!("{pipewire_path}:/tmp/pipewire-0");
     if settings.expose_pipewire {
@@ -439,41 +422,69 @@ pub fn build_litterbox(lbx_name: &str, user: &str) -> Result<()> {
     Ok(())
 }
 
-pub async fn enter_litterbox(lbx_name: &str) -> Result<()> {
+pub fn enter_litterbox(lbx_name: &str) -> Result<()> {
     let container = get_container_details(lbx_name)?
         .ok_or_else(|| anyhow!("No container found for {}", lbx_name))?;
     let container_id = container.id;
 
-    if !is_container_running(lbx_name)? {
+    let daemon_lock = files::daemon_lock_path(lbx_name)?;
+    let daemon_running = daemon_lock.exists() && {
+        if let Ok(pid_str) = std::fs::read_to_string(&daemon_lock) {
+            if let Ok(pid) = pid_str.trim().parse::<u32>() {
+                let pid = Pid::from_raw(pid as i32);
+                kill(pid, None).is_ok()
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    };
+
+    if !daemon_running {
+        if is_container_running(lbx_name)? {
+            warn!("Daemon was not running but container was. Restarting daemon...");
+        }
+
         let keys = Keys::load()?;
         let password = keys.password_if_needed(lbx_name)?;
 
-        if let Some(ref pwd) = password {
-            let mut cmd = Command::new(litterbox_binary_path());
-            cmd.args(["ssh-daemon", lbx_name]);
-            cmd.stdin(Stdio::piped())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null());
+        let log_file = files::daemon_log_file(lbx_name)?;
+        let log_file_clone = log_file.try_clone()?;
 
-            let mut daemon_child = cmd.spawn().context("Failed to run litterbox command")?;
+        let mut cmd = Command::new(files::litterbox_binary_path());
+        cmd.args(["daemon", lbx_name]);
+        cmd.stdin(Stdio::piped());
+        cmd.stdout(Stdio::from(log_file));
+        cmd.stderr(Stdio::from(log_file_clone));
 
-            if let Some(stdin) = daemon_child.stdin.take() {
-                use std::io::Write;
+        let mut daemon_child = cmd.spawn().context("Failed to run Litterbox daemon")?;
 
-                let mut stdin = stdin;
-                stdin
-                    .write_all(pwd.as_bytes())
-                    .context("Failed to write to daemon stdin")?;
-            }
+        if let Some(ref pwd) = password
+            && let Some(stdin) = daemon_child.stdin.take()
+        {
+            use std::io::Write;
+            let mut stdin = stdin;
+            stdin
+                .write_all(pwd.as_bytes())
+                .context("Failed to write password to daemon")?;
         }
+    }
 
+    if !is_container_running(lbx_name)? {
         let start_child = Command::new("podman")
             .args(["start", &container_id])
             .spawn()
             .context("Failed to run podman command")?;
 
         wait_for_podman(start_child)?;
+    } else {
+        println!("Container already running, just attaching...")
     }
+
+    let my_pid = std::process::id();
+    let session_lock = files::session_lock_path(lbx_name)?;
+    files::append_pid_to_session_lockfile(&session_lock, my_pid)?;
 
     let exec_child = Command::new("podman")
         .args([
@@ -487,14 +498,9 @@ pub async fn enter_litterbox(lbx_name: &str) -> Result<()> {
         ])
         .spawn()
         .context("Failed to run podman command")?;
-
     let _ = wait_for_podman(exec_child);
 
-    if !any_remaining_pts_processes(&container_id)? {
-        debug!("No remaining pts processes, shutting down container.");
-        stop_container(&container_id)?;
-    }
-
+    files::remove_pid_from_session_lockfile(&session_lock, my_pid)?;
     debug!("Litterbox finished.");
     Ok(())
 }

@@ -15,8 +15,7 @@ use tabled::{Table, Tabled};
 
 use crate::{
     agent::{AgentState, start_ssh_agent},
-    files::{keyfile_path, read_file, ssh_daemon_lock_path, write_file},
-    podman::any_remaining_pts_processes,
+    files,
 };
 
 fn gen_key() -> PrivateKey {
@@ -103,9 +102,9 @@ impl Keys {
     // TODO: perhaps we should place a lock on the keyfile while this struct exists?
 
     fn save_to_file(&self) -> Result<()> {
-        let path = keyfile_path()?;
+        let path = files::keyfile_path()?;
         let contents = ron::ser::to_string(self).context("failed to serialise keys")?;
-        write_file(&path, &contents)
+        files::write_file(&path, &contents)
     }
 
     pub fn init_default() -> Result<Self> {
@@ -126,13 +125,13 @@ impl Keys {
     }
 
     pub fn load() -> Result<Self> {
-        let keyfile = keyfile_path()?;
+        let keyfile = files::keyfile_path()?;
         if !keyfile.exists() {
             println!("Keys file does not exist yet. A new one will be created.");
             return Self::init_default();
         }
 
-        let contents = read_file(keyfile.as_path())?;
+        let contents = files::read_file(keyfile.as_path())?;
         Ok(ron::from_str(&contents)?)
     }
 
@@ -298,6 +297,7 @@ impl Keys {
                 .context("Failed to register SSH key")?;
         }
 
+        // Ensure the agent will now start prompting for authorization
         agent_state.locked.store(true, Ordering::SeqCst);
 
         Ok(())
@@ -329,45 +329,63 @@ impl Keys {
     }
 }
 
-pub async fn run_ssh_agent_daemon(lbx_name: &str, password: &str) -> Result<()> {
-    let lock_path = ssh_daemon_lock_path(lbx_name)?;
+pub async fn run_daemon(lbx_name: &str, password: Option<&str>) -> Result<()> {
+    let daemon_lock = files::daemon_lock_path(lbx_name)?;
 
-    if lock_path.exists() {
-        let pid_str = std::fs::read_to_string(&lock_path).context("Failed to read lock file")?;
+    if daemon_lock.exists() {
+        let pid_str =
+            std::fs::read_to_string(&daemon_lock).context("Failed to read daemon lock file")?;
 
         if let Ok(pid) = pid_str.trim().parse::<u32>() {
             let pid = Pid::from_raw(pid as i32);
             if kill(pid, None).is_ok() {
-                info!("SSH daemon already running for {}", lbx_name);
+                info!("Daemon already running for {}", lbx_name);
                 return Ok(());
             }
         }
 
-        info!("Stale lock file found for SSH daemon, removing");
-        std::fs::remove_file(&lock_path).context("Failed to remove stale lock file")?;
+        info!("Stale daemon lock file found, removing");
+        std::fs::remove_file(&daemon_lock).context("Failed to remove stale daemon lock file")?;
     }
 
     let my_pid = std::process::id();
-    std::fs::write(&lock_path, my_pid.to_string()).context("Failed to write lock file")?;
+    std::fs::write(&daemon_lock, my_pid.to_string()).context("Failed to write daemon lock file")?;
 
-    let keys = Keys::load()?;
-
-    if keys.has_attached_keys(lbx_name) {
-        keys.start_ssh_server(lbx_name, password).await?;
+    if let Some(pwd) = password {
+        let keys = Keys::load()?;
+        if keys.has_attached_keys(lbx_name) {
+            keys.start_ssh_server(lbx_name, pwd).await?;
+        } else {
+            log::info!("No keys attached to {}, skipping SSH agent setup", lbx_name);
+        }
     } else {
-        log::info!("No keys attached to {}, skipping SSH agent setup", lbx_name);
+        log::info!("No password provided, skipping SSH agent setup");
     }
 
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
-        if !any_remaining_pts_processes(lbx_name).unwrap_or(false) {
+        let session_path = files::session_lock_path(lbx_name)?;
+        files::cleanup_dead_pids_from_session_lockfile(&session_path)?;
+
+        if files::is_session_lockfile_empty(&session_path)? {
             break;
         }
     }
 
-    std::fs::remove_file(&lock_path).context("Failed to remove lock file")?;
-    info!("SSH daemon exiting for {}", lbx_name);
+    if let Err(e) = stop_container(lbx_name) {
+        log::error!("Failed to stop container: {}", e);
+    }
+
+    std::fs::remove_file(&daemon_lock).context("Failed to remove daemon lock file")?;
+    info!("Daemon exiting for {}", lbx_name);
+    Ok(())
+}
+
+fn stop_container(lbx_name: &str) -> Result<()> {
+    let container = crate::podman::get_container_details(lbx_name)?
+        .ok_or_else(|| anyhow!("No container found for {}", lbx_name))?;
+    crate::podman::stop_container(&container.id)?;
     Ok(())
 }
 

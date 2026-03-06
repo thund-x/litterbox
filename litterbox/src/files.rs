@@ -1,5 +1,5 @@
-use anyhow::Result;
-use std::fs;
+use anyhow::{Context, Result};
+use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 
 use crate::env;
@@ -33,8 +33,107 @@ pub fn settings_path(lbx_name: &str) -> Result<PathBuf> {
     path_relative_to_lbx_root(&format!("definitions/{lbx_name}.ron"))
 }
 
-pub fn ssh_daemon_lock_path(lbx_name: &str) -> Result<PathBuf> {
-    path_relative_to_lbx_root(&format!(".ssh-daemon-{lbx_name}.lock"))
+pub fn daemon_lock_path(lbx_name: &str) -> Result<PathBuf> {
+    path_relative_to_lbx_root(&format!(".daemon-{lbx_name}.lock"))
+}
+
+pub fn session_lock_path(lbx_name: &str) -> Result<PathBuf> {
+    path_relative_to_lbx_root(&format!(".session-{lbx_name}.lock"))
+}
+
+pub fn daemon_log_file(lbx_name: &str) -> Result<File> {
+    let path = path_relative_to_lbx_root(&format!("logs/daemon-{lbx_name}.log"))?;
+    let output_dir = path.parent().expect("Path should have parent.");
+    fs::create_dir_all(output_dir)?;
+    File::create(&path).context("Could not create daemon log file")
+}
+
+pub fn append_pid_to_session_lockfile(path: &Path, pid: u32) -> Result<()> {
+    let mut pids = read_pids_from_session_lockfile(path)?;
+
+    if !pids.contains(&pid) {
+        pids.push(pid);
+        write_pids_to_session_lockfile(path, &pids)?;
+    }
+
+    Ok(())
+}
+
+pub fn remove_pid_from_session_lockfile(path: &Path, pid: u32) -> Result<()> {
+    let mut pids = read_pids_from_session_lockfile(path)?;
+
+    pids.retain(|&p| p != pid);
+    if pids.is_empty() {
+        if path.exists() {
+            fs::remove_file(path)?;
+        }
+    } else {
+        write_pids_to_session_lockfile(path, &pids)?;
+    }
+
+    Ok(())
+}
+
+pub fn write_pids_to_session_lockfile(path: &Path, pids: &[u32]) -> Result<()> {
+    let content = pids
+        .iter()
+        .map(|p| p.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    write_file(path, &content)
+}
+
+pub fn read_pids_from_session_lockfile(path: &Path) -> Result<Vec<u32>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let content = read_file(path)?;
+    content
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.trim().parse::<u32>().map_err(anyhow::Error::from))
+        .collect()
+}
+
+pub fn is_session_lockfile_empty(path: &Path) -> Result<bool> {
+    if !path.exists() {
+        return Ok(true);
+    }
+
+    let content = read_file(path)?;
+    Ok(content.trim().is_empty())
+}
+
+pub fn cleanup_dead_pids_from_session_lockfile(path: &Path) -> Result<()> {
+    use nix::sys::signal::kill;
+    use nix::unistd::Pid;
+
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let pids = read_pids_from_session_lockfile(path)?;
+    let alive_pids: Vec<u32> = pids
+        .iter()
+        .filter(|&pid| {
+            let pid = Pid::from_raw(*pid as i32);
+            kill(pid, None).is_ok()
+        })
+        .copied()
+        .collect();
+
+    if pids == alive_pids {
+        return Ok(());
+    }
+
+    if alive_pids.is_empty() {
+        fs::remove_file(path)?;
+    } else {
+        write_pids_to_session_lockfile(path, &alive_pids)?;
+    }
+
+    Ok(())
 }
 
 pub fn pipewire_socket_path() -> Result<PathBuf> {
@@ -45,7 +144,6 @@ pub fn pipewire_socket_path() -> Result<PathBuf> {
 
 pub fn write_file(path: &Path, contents: &str) -> Result<()> {
     let output_dir = path.parent().expect("Path should have parent.");
-
     fs::create_dir_all(output_dir)?;
     fs::write(path, contents)?;
     Ok(())

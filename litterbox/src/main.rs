@@ -17,7 +17,7 @@ use crate::{
     agent::prompt_confirmation,
     devices::attach_device,
     files::{dockerfile_path, write_file},
-    keys::{Keys, run_ssh_agent_daemon},
+    keys::{Keys, run_daemon},
     podman::*,
 };
 
@@ -174,9 +174,9 @@ enum Commands {
         lbx_name: String,
     },
 
-    /// Run SSH agent daemon (for internal use)
+    /// Run daemon (for internal use)
     #[clap(hide = true)]
-    SshDaemon {
+    Daemon {
         /// The name of the Litterbox
         name: String,
     },
@@ -196,9 +196,7 @@ fn run_menu() -> Result<()> {
             println!("Litterbox built!");
         }
         Commands::Enter { name } => {
-            // We wait to create the runtime here since only this one command depends on it.
-            let rt = tokio::runtime::Runtime::new().expect("Tokio runtime should start");
-            rt.block_on(enter_litterbox(&name))?;
+            enter_litterbox(&name)?;
             println!("Exited Litterbox...")
         }
         Commands::List => {
@@ -219,14 +217,21 @@ fn run_menu() -> Result<()> {
         Commands::Confirm { request, lbx_name } => {
             prompt_confirmation(&request, &lbx_name);
         }
-        Commands::SshDaemon { name } => {
-            use std::io::{self, Read};
+        Commands::Daemon { name } => {
+            use std::io::{Read, stdin};
 
-            let mut password = String::new();
-            io::stdin().read_to_string(&mut password)?;
+            let mut password_input = String::new();
+            stdin().read_to_string(&mut password_input)?;
+            let password_input = password_input.trim();
+            let password = if password_input.is_empty() {
+                None
+            } else {
+                Some(password_input)
+            };
 
+            // We wait to create the runtime here since only this one command depends on it.
             let rt = tokio::runtime::Runtime::new().expect("Tokio runtime should start");
-            rt.block_on(run_ssh_agent_daemon(&name, password.trim()))?;
+            rt.block_on(run_daemon(&name, password))?;
         }
     }
     Ok(())
