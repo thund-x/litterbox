@@ -351,16 +351,10 @@ pub async fn run_daemon(lbx_name: &str, password: Option<&str>) -> Result<()> {
     let my_pid = std::process::id();
     std::fs::write(&daemon_lock, my_pid.to_string()).context("Failed to write daemon lock file")?;
 
-    if let Some(pwd) = password {
-        let keys = Keys::load()?;
-        if keys.has_attached_keys(lbx_name) {
-            keys.start_ssh_server(lbx_name, pwd).await?;
-        } else {
-            log::info!("No keys attached to {}, skipping SSH agent setup", lbx_name);
-        }
-    } else {
-        log::info!("No password provided, skipping SSH agent setup");
-    }
+    // TODO: perhaps we should print a warning if there are keys attached without a password provided
+    let password = password.unwrap_or("");
+    let keys = Keys::load()?;
+    keys.start_ssh_server(lbx_name, password).await?;
 
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
