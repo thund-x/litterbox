@@ -487,15 +487,7 @@ pub fn enter_litterbox(lbx_name: &str) -> Result<()> {
     files::append_pid_to_session_lockfile(&session_lock, my_pid)?;
 
     let exec_child = Command::new("podman")
-        .args([
-            "exec",
-            "-it",
-            &container_id,
-            "env",
-            "sh",
-            "-c",
-            "exec $SHELL -l",
-        ])
+        .args(["exec", "-it", &container_id, "/prep-home.sh"])
         .spawn()
         .context("Failed to run podman command")?;
     let _ = wait_for_podman(exec_child);

@@ -5,7 +5,7 @@ FROM ubuntu:latest
 RUN apt-get update && \
     apt-get install -y sudo weston mesa-vulkan-drivers openssh-client git iputils-ping vulkan-tools curl iproute2 rsync
 
-# Install the fish shell for a nicer experience
+# Install the fish shell for a nicer experience (ADAPT TO YOUR OWN NEEDS)
 RUN apt-get install -y fish
 
 # Install development tools (ADAPT TO YOUR OWN NEEDS)
@@ -30,24 +30,22 @@ WORKDIR /home/$USER
 RUN <<'EOF'
 # Create the script using a nested heredoc
 cat <<'EOT' > /prep-home.sh
-#!/usr/bin/env fish
+#!/usr/bin/env sh
 
-set MARKER "$HOME/.home-built"
+MARKER="$HOME/.home-built"
 
 # If the marker file already exists, exit early
-if test -f "$MARKER"
+if [ -f "$MARKER" ]; then
     echo "Home already built; skipping."
     exec $SHELL -l
-end
+fi
 
 echo "Building home for the first time..."
 
-# ------------------------------
-# ADAPT THIS TO YOUR OWN NEEDS
-# ------------------------------
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-curl -f https://zed.dev/install.sh | sh
-fish_add_path -U "$HOME/.local/bin"
+#--------------------------------------
+# ADAPT THIS EXAMPLE TO YOUR OWN NEEDS
+#--------------------------------------
+#curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 # Create the marker file to prevent re-running
 touch "$MARKER"
@@ -63,7 +61,7 @@ EOF
 
 # Set LANG to enable UTF-8 support
 ENV LANG=en_US.UTF-8
+
 # Enter the fish shell by default
 ENV SHELL=fish
 RUN chsh -s /usr/bin/fish $USER
-CMD ["fish", "/prep-home.sh"]
