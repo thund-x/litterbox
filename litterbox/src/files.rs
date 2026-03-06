@@ -1,49 +1,156 @@
-use std::fs;
+use anyhow::{Context, Result};
+use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 
-use crate::{LitterboxError, env};
+use crate::env;
 
-fn path_relative_to_lbx_root(relative_path: &str) -> Result<PathBuf, LitterboxError> {
+pub fn litterbox_binary_path() -> String {
+    std::env::args()
+        .next()
+        .expect("Binary path should be defined.")
+}
+
+fn path_relative_to_lbx_root(relative_path: &str) -> Result<PathBuf> {
     let home_dir = env::home_dir()?;
     let home_path = Path::new(&home_dir);
     let full_path = home_path.join("Litterbox").join(relative_path);
     Ok(full_path)
 }
 
-pub fn dockerfile_path(lbx_name: &str) -> Result<PathBuf, LitterboxError> {
+pub fn dockerfile_path(lbx_name: &str) -> Result<PathBuf> {
     path_relative_to_lbx_root(&format!("definitions/{lbx_name}.Dockerfile"))
 }
 
-pub fn keyfile_path() -> Result<PathBuf, LitterboxError> {
+pub fn keyfile_path() -> Result<PathBuf> {
     path_relative_to_lbx_root("keys.ron")
 }
 
-pub fn lbx_home_path(lbx_name: &str) -> Result<PathBuf, LitterboxError> {
+pub fn lbx_home_path(lbx_name: &str) -> Result<PathBuf> {
     path_relative_to_lbx_root(&format!("homes/{lbx_name}"))
 }
 
-pub fn settings_path(lbx_name: &str) -> Result<PathBuf, LitterboxError> {
+pub fn settings_path(lbx_name: &str) -> Result<PathBuf> {
     path_relative_to_lbx_root(&format!("definitions/{lbx_name}.ron"))
 }
 
-pub fn pipewire_socket_path() -> Result<PathBuf, LitterboxError> {
+pub fn daemon_lock_path(lbx_name: &str) -> Result<PathBuf> {
+    path_relative_to_lbx_root(&format!(".daemon-{lbx_name}.lock"))
+}
+
+pub fn session_lock_path(lbx_name: &str) -> Result<PathBuf> {
+    path_relative_to_lbx_root(&format!(".session-{lbx_name}.lock"))
+}
+
+pub fn daemon_log_file(lbx_name: &str) -> Result<File> {
+    let path = path_relative_to_lbx_root(&format!("logs/daemon-{lbx_name}.log"))?;
+    let output_dir = path.parent().expect("Path should have parent.");
+    fs::create_dir_all(output_dir)?;
+    File::create(&path).context("Could not create daemon log file")
+}
+
+pub fn append_pid_to_session_lockfile(path: &Path, pid: u32) -> Result<()> {
+    let mut pids = read_pids_from_session_lockfile(path)?;
+
+    if !pids.contains(&pid) {
+        pids.push(pid);
+        write_pids_to_session_lockfile(path, &pids)?;
+    }
+
+    Ok(())
+}
+
+pub fn remove_pid_from_session_lockfile(path: &Path, pid: u32) -> Result<()> {
+    let mut pids = read_pids_from_session_lockfile(path)?;
+
+    pids.retain(|&p| p != pid);
+    if pids.is_empty() {
+        if path.exists() {
+            fs::remove_file(path)?;
+        }
+    } else {
+        write_pids_to_session_lockfile(path, &pids)?;
+    }
+
+    Ok(())
+}
+
+pub fn write_pids_to_session_lockfile(path: &Path, pids: &[u32]) -> Result<()> {
+    let content = pids
+        .iter()
+        .map(|p| p.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    write_file(path, &content)
+}
+
+pub fn read_pids_from_session_lockfile(path: &Path) -> Result<Vec<u32>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let content = read_file(path)?;
+    content
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.trim().parse::<u32>().map_err(anyhow::Error::from))
+        .collect()
+}
+
+pub fn is_session_lockfile_empty(path: &Path) -> Result<bool> {
+    if !path.exists() {
+        return Ok(true);
+    }
+
+    let content = read_file(path)?;
+    Ok(content.trim().is_empty())
+}
+
+pub fn cleanup_dead_pids_from_session_lockfile(path: &Path) -> Result<()> {
+    use nix::sys::signal::kill;
+    use nix::unistd::Pid;
+
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let pids = read_pids_from_session_lockfile(path)?;
+    let alive_pids: Vec<u32> = pids
+        .iter()
+        .filter(|&pid| {
+            let pid = Pid::from_raw(*pid as i32);
+            kill(pid, None).is_ok()
+        })
+        .copied()
+        .collect();
+
+    if pids == alive_pids {
+        return Ok(());
+    }
+
+    if alive_pids.is_empty() {
+        fs::remove_file(path)?;
+    } else {
+        write_pids_to_session_lockfile(path, &alive_pids)?;
+    }
+
+    Ok(())
+}
+
+pub fn pipewire_socket_path() -> Result<PathBuf> {
     let xdg_runtime_dir = env::xdg_runtime_dir()?;
     let path = format!("{xdg_runtime_dir}/pipewire-0");
     Ok(Path::new(&path).to_path_buf())
 }
 
-pub fn write_file(path: &Path, contents: &str) -> Result<(), LitterboxError> {
+pub fn write_file(path: &Path, contents: &str) -> Result<()> {
     let output_dir = path.parent().expect("Path should have parent.");
-
-    fs::create_dir_all(output_dir)
-        .map_err(|e| LitterboxError::DirUncreatable(e, output_dir.to_path_buf()))?;
-
-    fs::write(path, contents).map_err(|e| LitterboxError::WriteFailed(e, path.to_path_buf()))?;
+    fs::create_dir_all(output_dir)?;
+    fs::write(path, contents)?;
     Ok(())
 }
 
-pub fn read_file(path: &Path) -> Result<String, LitterboxError> {
-    fs::read_to_string(path).map_err(|e| LitterboxError::ReadFailed(e, path.to_path_buf()))
+pub fn read_file(path: &Path) -> Result<String> {
+    Ok(fs::read_to_string(path)?)
 }
 
 pub struct SshSockFile {
@@ -51,21 +158,19 @@ pub struct SshSockFile {
 }
 
 impl SshSockFile {
-    pub fn new(lbx_name: &str, create_empty_placeholder: bool) -> Result<Self, LitterboxError> {
+    pub fn new(lbx_name: &str, create_empty_placeholder: bool) -> Result<Self> {
         let path = path_relative_to_lbx_root(&format!(".ssh/{lbx_name}.sock"))?;
         let path_ref = &path;
 
-        if fs::exists(path_ref).map_err(|e| LitterboxError::ExistsFailed(e, path.clone()))? {
+        if fs::exists(path_ref)? {
             log::warn!("Deleting old SSH socket: {:#?}", path_ref);
-            fs::remove_file(path_ref).map_err(|e| LitterboxError::RemoveFailed(e, path.clone()))?;
+            fs::remove_file(path_ref)?;
         } else {
             let ssh_dir = path_ref.parent().expect("SSH path should have parent.");
-            fs::create_dir_all(ssh_dir)
-                .map_err(|e| LitterboxError::DirUncreatable(e, ssh_dir.to_path_buf()))?;
+            fs::create_dir_all(ssh_dir)?;
 
             if create_empty_placeholder {
-                fs::File::create(path_ref)
-                    .map_err(|e| LitterboxError::CreateFailed(e, ssh_dir.to_path_buf()))?;
+                fs::File::create(path_ref)?;
             }
         }
 
