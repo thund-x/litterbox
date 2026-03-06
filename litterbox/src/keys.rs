@@ -1,3 +1,4 @@
+use anyhow::{Context, Result, anyhow};
 use argon2::Argon2;
 use inquire::{MultiSelect, Password};
 use log::info;
@@ -13,7 +14,6 @@ use std::sync::{Arc, atomic::Ordering};
 use tabled::{Table, Tabled};
 
 use crate::{
-    LitterboxError,
     agent::{AgentState, start_ssh_agent},
     files::{keyfile_path, read_file, ssh_daemon_lock_path, write_file},
     podman::any_remaining_pts_processes,
@@ -102,21 +102,17 @@ pub struct Keys {
 impl Keys {
     // TODO: perhaps we should place a lock on the keyfile while this struct exists?
 
-    fn save_to_file(&self) -> Result<(), LitterboxError> {
+    fn save_to_file(&self) -> Result<()> {
         let path = keyfile_path()?;
-        let contents = ron::ser::to_string(self).map_err(|e| {
-            eprintln!("Serialise error: {:#?}", e);
-            LitterboxError::FailedToSerialise("Keys")
-        })?;
+        let contents = ron::ser::to_string(self).context("failed to serialise keys")?;
         write_file(&path, &contents)
     }
 
-    pub fn init_default() -> Result<Self, LitterboxError> {
+    pub fn init_default() -> Result<Self> {
         println!("Please enter a password to protect your keys.");
         let password = Password::new("Key Manager Password")
             .with_display_mode(inquire::PasswordDisplayMode::Masked)
-            .prompt()
-            .map_err(LitterboxError::PromptError)?;
+            .prompt()?;
 
         let password_hash = hash_password(&password);
         let keys = Vec::new();
@@ -129,7 +125,7 @@ impl Keys {
         Ok(s)
     }
 
-    pub fn load() -> Result<Self, LitterboxError> {
+    pub fn load() -> Result<Self> {
         let keyfile = keyfile_path()?;
         if !keyfile.exists() {
             println!("Keys file does not exist yet. A new one will be created.");
@@ -137,7 +133,7 @@ impl Keys {
         }
 
         let contents = read_file(keyfile.as_path())?;
-        ron::from_str(&contents).map_err(LitterboxError::ParseKeyFile)
+        Ok(ron::from_str(&contents)?)
     }
 
     pub fn print_list(&self) {
@@ -146,12 +142,11 @@ impl Keys {
         println!("{table}");
     }
 
-    pub fn change_password(&mut self) -> Result<(), LitterboxError> {
+    pub fn change_password(&mut self) -> Result<()> {
         let old_password = self.prompt_password()?;
         let new_password = Password::new("New Key Manager Password")
             .with_display_mode(inquire::PasswordDisplayMode::Masked)
-            .prompt()
-            .map_err(LitterboxError::PromptError)?;
+            .prompt()?;
 
         for key in &mut self.keys {
             key.change_password(&old_password, &new_password);
@@ -161,14 +156,13 @@ impl Keys {
         Ok(())
     }
 
-    fn prompt_password(&self) -> Result<String, LitterboxError> {
+    fn prompt_password(&self) -> Result<String> {
         println!("Please enter the password you chose for the key manager.");
         loop {
             let password = Password::new("Key Manager Password")
                 .with_display_mode(inquire::PasswordDisplayMode::Masked)
                 .without_confirmation()
-                .prompt()
-                .map_err(LitterboxError::PromptError)?;
+                .prompt()?;
 
             if check_password(&password, &self.password_hash) {
                 return Ok(password);
@@ -186,9 +180,9 @@ impl Keys {
         self.keys.iter_mut().find(|key| key.name == key_name)
     }
 
-    pub fn generate(&mut self, key_name: &str) -> Result<(), LitterboxError> {
+    pub fn generate(&mut self, key_name: &str) -> Result<()> {
         if self.key_mut(key_name).is_some() {
-            return Err(LitterboxError::KeyAlreadyExists(key_name.to_owned()));
+            return Err(anyhow!("Key {} already exists", key_name));
         }
 
         let password = self.prompt_password()?;
@@ -197,7 +191,7 @@ impl Keys {
         Ok(())
     }
 
-    pub fn delete(&mut self, key_name: &str) -> Result<(), LitterboxError> {
+    pub fn delete(&mut self, key_name: &str) -> Result<()> {
         let mut found = false;
         self.keys.retain(|k| {
             if k.name == key_name {
@@ -209,7 +203,7 @@ impl Keys {
         });
 
         if !found {
-            return Err(LitterboxError::KeyDoesNotExist(key_name.to_owned()));
+            return Err(anyhow!("Key {} does not exist", key_name));
         }
 
         self.save_to_file()?;
@@ -217,7 +211,7 @@ impl Keys {
         Ok(())
     }
 
-    pub fn attach(&mut self, key_name: &str, litterbox_name: &str) -> Result<(), LitterboxError> {
+    pub fn attach(&mut self, key_name: &str, litterbox_name: &str) -> Result<()> {
         match self.key_mut(key_name) {
             Some(key) => {
                 if key
@@ -225,9 +219,10 @@ impl Keys {
                     .iter()
                     .any(|name| *name == litterbox_name)
                 {
-                    return Err(LitterboxError::AlreadyAttachedToKey(
-                        key_name.to_owned(),
-                        litterbox_name.to_owned(),
+                    return Err(anyhow!(
+                        "Key {} already attached to litterbox {}",
+                        key_name,
+                        litterbox_name
                     ));
                 }
 
@@ -237,19 +232,18 @@ impl Keys {
                 println!("Attached {litterbox_name} to {key_name}!");
                 Ok(())
             }
-            None => Err(LitterboxError::KeyDoesNotExist(key_name.to_owned())),
+            None => Err(anyhow!("Key {} does not exist", key_name)),
         }
     }
 
-    pub fn detach(&mut self, key_name: &str) -> Result<(), LitterboxError> {
+    pub fn detach(&mut self, key_name: &str) -> Result<()> {
         match self.key_mut(key_name) {
             Some(key) => {
                 let to_remove = MultiSelect::new(
                     "Select the Litterboxes that you want to detach:",
                     key.attached_litterboxes.clone(),
                 )
-                .prompt()
-                .map_err(LitterboxError::PromptError)?;
+                .prompt()?;
 
                 key.attached_litterboxes
                     .retain(|name| !to_remove.contains(name));
@@ -259,7 +253,7 @@ impl Keys {
                 println!("N.B. running Litterboxes won't be affected until they are restarted!!");
                 Ok(())
             }
-            None => Err(LitterboxError::KeyDoesNotExist(key_name.to_owned())),
+            None => Err(anyhow!("Key {} does not exist", key_name)),
         }
     }
 
@@ -274,7 +268,7 @@ impl Keys {
         !self.attached_keys(lbx_name).is_empty()
     }
 
-    pub fn password_if_needed(&self, lbx_name: &str) -> Result<Option<String>, LitterboxError> {
+    pub fn password_if_needed(&self, lbx_name: &str) -> Result<Option<String>> {
         if self.has_attached_keys(lbx_name) {
             let password = self.prompt_password()?;
             Ok(Some(password))
@@ -283,18 +277,14 @@ impl Keys {
         }
     }
 
-    pub async fn start_ssh_server(
-        &self,
-        lbx_name: &str,
-        password: &str,
-    ) -> Result<(), LitterboxError> {
+    pub async fn start_ssh_server(&self, lbx_name: &str, password: &str) -> Result<()> {
         let agent_state = Arc::new(AgentState::default());
         let agent_path = start_ssh_agent(lbx_name, agent_state.clone()).await?;
         log::debug!("agent_path: {:#?}", agent_path);
 
         let stream = tokio::net::UnixStream::connect(&agent_path)
             .await
-            .map_err(LitterboxError::ConnectSocket)?;
+            .context("Failed to connect to SSH agent socket")?;
         let mut client = russh::keys::agent::client::AgentClient::connect(stream);
 
         log::debug!("Registering keys to SSH agent.");
@@ -305,7 +295,7 @@ impl Keys {
             client
                 .add_identity(&decrypted, &[])
                 .await
-                .map_err(LitterboxError::RegisterKey)?;
+                .context("Failed to register SSH key")?;
         }
 
         agent_state.locked.store(true, Ordering::SeqCst);
@@ -313,7 +303,7 @@ impl Keys {
         Ok(())
     }
 
-    pub fn print(&self, key_name: &str, private: bool) -> Result<(), LitterboxError> {
+    pub fn print(&self, key_name: &str, private: bool) -> Result<()> {
         match self.key(key_name) {
             Some(key) => {
                 let keys_password = self.prompt_password()?;
@@ -334,17 +324,16 @@ impl Keys {
                 println!("{}", openssh.as_str());
                 Ok(())
             }
-            None => Err(LitterboxError::KeyDoesNotExist(key_name.to_owned())),
+            None => Err(anyhow!("Key {} does not exist", key_name)),
         }
     }
 }
 
-pub async fn run_ssh_agent_daemon(lbx_name: &str, password: &str) -> Result<(), LitterboxError> {
+pub async fn run_ssh_agent_daemon(lbx_name: &str, password: &str) -> Result<()> {
     let lock_path = ssh_daemon_lock_path(lbx_name)?;
 
     if lock_path.exists() {
-        let pid_str = std::fs::read_to_string(&lock_path)
-            .map_err(|e| LitterboxError::ReadFailed(e, lock_path.clone()))?;
+        let pid_str = std::fs::read_to_string(&lock_path).context("Failed to read lock file")?;
 
         if let Ok(pid) = pid_str.trim().parse::<u32>() {
             let pid = Pid::from_raw(pid as i32);
@@ -355,13 +344,11 @@ pub async fn run_ssh_agent_daemon(lbx_name: &str, password: &str) -> Result<(), 
         }
 
         info!("Stale lock file found for SSH daemon, removing");
-        std::fs::remove_file(&lock_path)
-            .map_err(|e| LitterboxError::RemoveFailed(e, lock_path.clone()))?;
+        std::fs::remove_file(&lock_path).context("Failed to remove stale lock file")?;
     }
 
     let my_pid = std::process::id();
-    std::fs::write(&lock_path, my_pid.to_string())
-        .map_err(|e| LitterboxError::WriteFailed(e, lock_path.clone()))?;
+    std::fs::write(&lock_path, my_pid.to_string()).context("Failed to write lock file")?;
 
     let keys = Keys::load()?;
 
@@ -379,7 +366,7 @@ pub async fn run_ssh_agent_daemon(lbx_name: &str, password: &str) -> Result<(), 
         }
     }
 
-    std::fs::remove_file(&lock_path).map_err(|e| LitterboxError::RemoveFailed(e, lock_path))?;
+    std::fs::remove_file(&lock_path).context("Failed to remove lock file")?;
     info!("SSH daemon exiting for {}", lbx_name);
     Ok(())
 }

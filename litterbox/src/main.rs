@@ -1,3 +1,4 @@
+use anyhow::Result;
 use clap::{Parser, Subcommand};
 use inquire_derive::Selectable;
 use log::info;
@@ -7,7 +8,6 @@ use tabled::{Table, Tabled};
 mod agent;
 mod devices;
 mod env;
-mod errors;
 mod files;
 mod keys;
 mod podman;
@@ -16,7 +16,6 @@ mod settings;
 use crate::{
     agent::prompt_confirmation,
     devices::attach_device,
-    errors::LitterboxError,
     files::{dockerfile_path, write_file},
     keys::{Keys, run_ssh_agent_daemon},
     podman::*,
@@ -43,17 +42,13 @@ impl From<&ContainerDetails> for ContainerTableRow {
     }
 }
 
-fn extract_stdout(output: &Output) -> Result<&str, LitterboxError> {
+fn extract_stdout(output: &Output) -> Result<&str> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
 
-        // TODO: perhaps we can just store the COW instead?
-        return Err(LitterboxError::PodmanError(
-            output.status,
-            stderr.into_owned(),
-        ));
+        return Err(anyhow::anyhow!("Podman command failed: {}", stderr));
     }
-    str::from_utf8(&output.stdout).map_err(LitterboxError::ParseOutput)
+    Ok(str::from_utf8(&output.stdout)?)
 }
 
 #[derive(Debug, Copy, Clone, Selectable)]
@@ -87,15 +82,16 @@ impl Display for Template {
     }
 }
 
-fn define_litterbox(lbx_name: &str) -> Result<(), LitterboxError> {
+fn define_litterbox(lbx_name: &str) -> Result<()> {
     let dockerfile = dockerfile_path(lbx_name)?;
     if dockerfile.exists() {
-        return Err(LitterboxError::DockerfileAlreadyExists(dockerfile));
+        return Err(anyhow::anyhow!(
+            "Dockerfile already exists at {}",
+            dockerfile.display()
+        ));
     }
 
-    let template = Template::select("Choose a template:")
-        .prompt()
-        .map_err(LitterboxError::PromptError)?;
+    let template = Template::select("Choose a template:").prompt()?;
 
     write_file(dockerfile.as_path(), template.contents())?;
     info!("Default Dockerfile written to {}", dockerfile.display());
@@ -186,7 +182,7 @@ enum Commands {
     },
 }
 
-fn run_menu() -> Result<(), LitterboxError> {
+fn run_menu() -> Result<()> {
     let args = Args::parse();
     match args.command {
         Commands::Define { name } => {
@@ -227,9 +223,7 @@ fn run_menu() -> Result<(), LitterboxError> {
             use std::io::{self, Read};
 
             let mut password = String::new();
-            io::stdin()
-                .read_to_string(&mut password)
-                .map_err(|e| LitterboxError::ReadFailed(e, "stdin".into()))?;
+            io::stdin().read_to_string(&mut password)?;
 
             let rt = tokio::runtime::Runtime::new().expect("Tokio runtime should start");
             rt.block_on(run_ssh_agent_daemon(&name, password.trim()))?;
@@ -285,7 +279,7 @@ enum KeyCommands {
     ChangePassword {},
 }
 
-fn process_key_cmd(cmd: KeyCommands) -> Result<(), LitterboxError> {
+fn process_key_cmd(cmd: KeyCommands) -> Result<()> {
     let mut keys = Keys::load()?;
     match cmd {
         KeyCommands::List => {
@@ -320,6 +314,6 @@ fn main() {
     env_logger::init();
 
     if let Err(e) = run_menu() {
-        e.print();
+        eprintln!("Error: {:#}", e);
     }
 }

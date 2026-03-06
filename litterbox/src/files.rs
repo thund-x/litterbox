@@ -1,7 +1,8 @@
+use anyhow::Result;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::{LitterboxError, env};
+use crate::env;
 
 pub fn litterbox_binary_path() -> String {
     std::env::args()
@@ -9,51 +10,49 @@ pub fn litterbox_binary_path() -> String {
         .expect("Binary path should be defined.")
 }
 
-fn path_relative_to_lbx_root(relative_path: &str) -> Result<PathBuf, LitterboxError> {
+fn path_relative_to_lbx_root(relative_path: &str) -> Result<PathBuf> {
     let home_dir = env::home_dir()?;
     let home_path = Path::new(&home_dir);
     let full_path = home_path.join("Litterbox").join(relative_path);
     Ok(full_path)
 }
 
-pub fn dockerfile_path(lbx_name: &str) -> Result<PathBuf, LitterboxError> {
+pub fn dockerfile_path(lbx_name: &str) -> Result<PathBuf> {
     path_relative_to_lbx_root(&format!("definitions/{lbx_name}.Dockerfile"))
 }
 
-pub fn keyfile_path() -> Result<PathBuf, LitterboxError> {
+pub fn keyfile_path() -> Result<PathBuf> {
     path_relative_to_lbx_root("keys.ron")
 }
 
-pub fn lbx_home_path(lbx_name: &str) -> Result<PathBuf, LitterboxError> {
+pub fn lbx_home_path(lbx_name: &str) -> Result<PathBuf> {
     path_relative_to_lbx_root(&format!("homes/{lbx_name}"))
 }
 
-pub fn settings_path(lbx_name: &str) -> Result<PathBuf, LitterboxError> {
+pub fn settings_path(lbx_name: &str) -> Result<PathBuf> {
     path_relative_to_lbx_root(&format!("definitions/{lbx_name}.ron"))
 }
 
-pub fn ssh_daemon_lock_path(lbx_name: &str) -> Result<PathBuf, LitterboxError> {
+pub fn ssh_daemon_lock_path(lbx_name: &str) -> Result<PathBuf> {
     path_relative_to_lbx_root(&format!(".ssh-daemon-{lbx_name}.lock"))
 }
 
-pub fn pipewire_socket_path() -> Result<PathBuf, LitterboxError> {
+pub fn pipewire_socket_path() -> Result<PathBuf> {
     let xdg_runtime_dir = env::xdg_runtime_dir()?;
     let path = format!("{xdg_runtime_dir}/pipewire-0");
     Ok(Path::new(&path).to_path_buf())
 }
 
-pub fn write_file(path: &Path, contents: &str) -> Result<(), LitterboxError> {
+pub fn write_file(path: &Path, contents: &str) -> Result<()> {
     let output_dir = path.parent().expect("Path should have parent.");
 
-    fs::create_dir_all(output_dir)
-        .map_err(|e| LitterboxError::DirUncreatable(e, output_dir.to_path_buf()))?;
-
-    fs::write(path, contents).map_err(|e| LitterboxError::WriteFailed(e, path.to_path_buf()))?;
+    fs::create_dir_all(output_dir)?;
+    fs::write(path, contents)?;
     Ok(())
 }
 
-pub fn read_file(path: &Path) -> Result<String, LitterboxError> {
-    fs::read_to_string(path).map_err(|e| LitterboxError::ReadFailed(e, path.to_path_buf()))
+pub fn read_file(path: &Path) -> Result<String> {
+    Ok(fs::read_to_string(path)?)
 }
 
 pub struct SshSockFile {
@@ -61,21 +60,19 @@ pub struct SshSockFile {
 }
 
 impl SshSockFile {
-    pub fn new(lbx_name: &str, create_empty_placeholder: bool) -> Result<Self, LitterboxError> {
+    pub fn new(lbx_name: &str, create_empty_placeholder: bool) -> Result<Self> {
         let path = path_relative_to_lbx_root(&format!(".ssh/{lbx_name}.sock"))?;
         let path_ref = &path;
 
-        if fs::exists(path_ref).map_err(|e| LitterboxError::ExistsFailed(e, path.clone()))? {
+        if fs::exists(path_ref)? {
             log::warn!("Deleting old SSH socket: {:#?}", path_ref);
-            fs::remove_file(path_ref).map_err(|e| LitterboxError::RemoveFailed(e, path.clone()))?;
+            fs::remove_file(path_ref)?;
         } else {
             let ssh_dir = path_ref.parent().expect("SSH path should have parent.");
-            fs::create_dir_all(ssh_dir)
-                .map_err(|e| LitterboxError::DirUncreatable(e, ssh_dir.to_path_buf()))?;
+            fs::create_dir_all(ssh_dir)?;
 
             if create_empty_placeholder {
-                fs::File::create(path_ref)
-                    .map_err(|e| LitterboxError::CreateFailed(e, ssh_dir.to_path_buf()))?;
+                fs::File::create(path_ref)?;
             }
         }
 

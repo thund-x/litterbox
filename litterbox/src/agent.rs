@@ -1,3 +1,4 @@
+use anyhow::Result;
 use eframe::egui;
 use futures::Future;
 use russh::keys::*;
@@ -7,7 +8,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use strum_macros::{Display, EnumString};
 use tokio::process::Command;
 
-use crate::errors::LitterboxError;
 use crate::extract_stdout;
 use crate::files::{SshSockFile, litterbox_binary_path};
 
@@ -157,7 +157,7 @@ impl eframe::App for ConfirmationDialog<'_> {
 }
 
 pub struct AgentState {
-    /// When the agent is locked, uesrs will need to approve requests
+    /// When the agent is locked, users will need to approve requests
     pub locked: AtomicBool,
 
     /// When set, users no longer need to approve requests to list keys
@@ -173,10 +173,7 @@ impl Default for AgentState {
     }
 }
 
-pub async fn start_ssh_agent(
-    lbx_name: &str,
-    agent_state: Arc<AgentState>,
-) -> Result<PathBuf, LitterboxError> {
+pub async fn start_ssh_agent(lbx_name: &str, agent_state: Arc<AgentState>) -> Result<PathBuf> {
     let litterbox_path = litterbox_binary_path();
 
     let ssh_sock = SshSockFile::new(lbx_name, false)?;

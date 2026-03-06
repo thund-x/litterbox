@@ -25,3 +25,4 @@ egui_extras = { version="0.33", features=["svg"] }
 futures = "0.3"
 strum = "0.27"
 strum_macros = "0.27"
+anyhow = "1.0"
