@@ -16,6 +16,7 @@ use tabled::{Table, Tabled};
 use crate::{
     agent::{AgentState, start_ssh_agent},
     files,
+    podman::is_container_running,
 };
 
 fn gen_key() -> PrivateKey {
@@ -329,6 +330,7 @@ impl Keys {
     }
 }
 
+// TODO: keys.rs is probably not the best place for this function anymore
 pub async fn run_daemon(lbx_name: &str, password: Option<&str>) -> Result<()> {
     let daemon_lock = files::daemon_lock_path(lbx_name)?;
 
@@ -356,30 +358,26 @@ pub async fn run_daemon(lbx_name: &str, password: Option<&str>) -> Result<()> {
     let keys = Keys::load()?;
     keys.start_ssh_server(lbx_name, password).await?;
 
+    let session_path = files::session_lock_path(lbx_name)?;
+
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
-        let session_path = files::session_lock_path(lbx_name)?;
         files::cleanup_dead_pids_from_session_lockfile(&session_path)?;
 
-        if files::is_session_lockfile_empty(&session_path)? {
+        if !is_container_running(lbx_name)? {
+            info!("Container no longer running, daemon will stop.");
             break;
         }
     }
 
-    if let Err(e) = stop_container(lbx_name) {
-        log::error!("Failed to stop container: {}", e);
+    if session_path.exists() {
+        info!("Cleaning up session lockfile.");
+        std::fs::remove_file(&session_path).context("Failed to remove session lock file")?;
     }
 
     std::fs::remove_file(&daemon_lock).context("Failed to remove daemon lock file")?;
     info!("Daemon exiting for {}", lbx_name);
-    Ok(())
-}
-
-fn stop_container(lbx_name: &str) -> Result<()> {
-    let container = crate::podman::get_container_details(lbx_name)?
-        .ok_or_else(|| anyhow!("No container found for {}", lbx_name))?;
-    crate::podman::stop_container(&container.id)?;
     Ok(())
 }
 

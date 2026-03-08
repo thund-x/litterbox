@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use inquire_derive::Selectable;
 use log::info;
-use std::{fmt::Display, process::Output};
+use std::{fmt::Display, path::Path, process::Output};
 use tabled::{Table, Tabled};
 
 mod agent;
@@ -237,10 +237,31 @@ fn run_menu() -> Result<()> {
             let rt = tokio::runtime::Runtime::new().expect("Tokio runtime should start");
             rt.block_on(run_daemon(&name, password))?;
         }
-        Commands::Wait => loop {
-            // TODO: we should instead wait for all Litterbox clients to close and then exit here
-            std::thread::park();
-        },
+        Commands::Wait => {
+            let session_lock_path = Path::new("/session.lock");
+
+            println!("Litterbox started, waiting for session to become empty.");
+            loop {
+                match std::fs::read_to_string(session_lock_path) {
+                    Ok(content) => {
+                        if content.trim().is_empty() {
+                            break;
+                        }
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        break;
+                    }
+                    Err(e) => {
+                        log::error!("Failed to read session lock file: {}", e);
+                        return Err(anyhow::anyhow!("Failed to read session lock file: {}", e));
+                    }
+                }
+
+                // FIXME: instead of waiting for a period, we should use a kernel facility to wait for file changes
+                std::thread::sleep(std::time::Duration::from_secs(5));
+            }
+            println!("Session empty, Litterbox finished.");
+        }
     }
     Ok(())
 }

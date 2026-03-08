@@ -178,15 +178,6 @@ pub fn is_container_running(lbx_name: &str) -> Result<bool> {
     Ok(!containers.0.is_empty())
 }
 
-pub fn stop_container(container_id: &str) -> Result<()> {
-    let child = Command::new("podman")
-        .args(["stop", container_id])
-        .spawn()
-        .context("Failed to run podman command")?;
-
-    wait_for_podman(child)
-}
-
 fn wait_for_podman(mut child: Child) -> Result<()> {
     let res = child.wait().context("Failed to run podman command")?;
     ensure!(res.success(), "Podman command failed");
@@ -320,6 +311,21 @@ pub fn build_litterbox(lbx_name: &str, user: &str) -> Result<()> {
 
     let litterbox_mount = format!("{}:/litterbox:ro", litterbox_binary_path());
 
+    let session_lock_path = files::session_lock_path(lbx_name)?;
+    let session_lock_path_str = session_lock_path
+        .to_str()
+        .expect("Session lock path should be valid.");
+
+    if session_lock_path.exists() {
+        log::warn!("Deleting old session lock file: {:#?}", session_lock_path);
+        fs::remove_file(&session_lock_path)?;
+    } else if let Some(parent) = session_lock_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::File::create(&session_lock_path)?;
+
+    let session_lock_mount = format!("{session_lock_path_str}:/session.lock:ro");
+
     let mut full_args = vec![
         "create",
         "--replace",
@@ -333,6 +339,8 @@ pub fn build_litterbox(lbx_name: &str, user: &str) -> Result<()> {
         "--security-opt=label=disable", // TODO: use Landlock for better isolation
         "-v",
         &litterbox_mount,
+        "-v",
+        &session_lock_mount,
         "--entrypoint",
         "[\"/litterbox\", \"wait\"]",
         "-e",
@@ -476,7 +484,13 @@ pub fn enter_litterbox(lbx_name: &str) -> Result<()> {
         }
     }
 
+    let my_pid = std::process::id();
+    let session_lock = files::session_lock_path(lbx_name)?;
+    files::append_pid_to_session_lockfile(&session_lock, my_pid)?;
+
     if !is_container_running(lbx_name)? {
+        println!("Container not running yet, starting now...");
+
         let start_child = Command::new("podman")
             .args(["start", &container_id])
             .spawn()
@@ -486,10 +500,6 @@ pub fn enter_litterbox(lbx_name: &str) -> Result<()> {
     } else {
         println!("Container already running, just attaching...")
     }
-
-    let my_pid = std::process::id();
-    let session_lock = files::session_lock_path(lbx_name)?;
-    files::append_pid_to_session_lockfile(&session_lock, my_pid)?;
 
     let exec_child = Command::new("podman")
         .args(["exec", "-it", &container_id, "/prep-home.sh"])

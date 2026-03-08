@@ -63,13 +63,7 @@ pub fn remove_pid_from_session_lockfile(path: &Path, pid: u32) -> Result<()> {
     let mut pids = read_pids_from_session_lockfile(path)?;
 
     pids.retain(|&p| p != pid);
-    if pids.is_empty() {
-        if path.exists() {
-            fs::remove_file(path)?;
-        }
-    } else {
-        write_pids_to_session_lockfile(path, &pids)?;
-    }
+    write_pids_to_session_lockfile(path, &pids)?;
 
     Ok(())
 }
@@ -96,15 +90,6 @@ pub fn read_pids_from_session_lockfile(path: &Path) -> Result<Vec<u32>> {
         .collect()
 }
 
-pub fn is_session_lockfile_empty(path: &Path) -> Result<bool> {
-    if !path.exists() {
-        return Ok(true);
-    }
-
-    let content = read_file(path)?;
-    Ok(content.trim().is_empty())
-}
-
 pub fn cleanup_dead_pids_from_session_lockfile(path: &Path) -> Result<()> {
     use nix::sys::signal::kill;
     use nix::unistd::Pid;
@@ -127,11 +112,7 @@ pub fn cleanup_dead_pids_from_session_lockfile(path: &Path) -> Result<()> {
         return Ok(());
     }
 
-    if alive_pids.is_empty() {
-        fs::remove_file(path)?;
-    } else {
-        write_pids_to_session_lockfile(path, &alive_pids)?;
-    }
+    write_pids_to_session_lockfile(path, &alive_pids)?;
 
     Ok(())
 }
