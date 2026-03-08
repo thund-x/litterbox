@@ -320,7 +320,6 @@ pub fn build_litterbox(lbx_name: &str, user: &str) -> Result<()> {
 
     let mut full_args = vec![
         "create",
-        "--tty",
         "--replace",
         "--name",
         &container_name,

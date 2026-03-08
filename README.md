@@ -109,6 +109,10 @@ Litterbox is very similar to DevContainers in that is uses Dockerfiles and conta
 
 Litterbox is most similar to Distrobox in terms of its design and functionality. The primary difference is that Distrobox does not aim to provide any isolation/sandboxing at all whereas Litterbox has a strong emphasis on providing it. Distrobox avoids sandboxing in order to provide more seamless integration between applications running inside the Distrobox and the host system. It tries to solve the problem of running software intended for a different distro as if it is running natively. Litterbox instead sacrificies much of the convenience that Distrobox provides in exchange for some isolation/sandboxing capabilities.
 
+## Stability
+
+Litterbox is still early in its development lifecycle and not particularly stable yet.
+
 ## TODO
 
 Litterbox is still very much WIP with many missing features or required improvements. Following is a list of some important pieces that are still missing:
