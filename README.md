@@ -123,6 +123,7 @@ Litterbox is still very much WIP with many missing features or required improvem
 - [x] Add function to approve some SSH agent requests for the duration of the session.
 - [x] Add optional support for using host network.
 - [x] Add optional support for port forwarding with the default "pasta" networking.
+- [x] Support entering a Litterbox multiple times.
 - [ ] Add a "prune" command to get rid of dangling images.
 - [ ] Add support for more granular network settings.
 - [ ] Show SSH key name when prompting for approval. (Currently blocked by https://github.com/Eugeny/russh/issues/602)
