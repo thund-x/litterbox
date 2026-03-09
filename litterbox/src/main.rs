@@ -185,6 +185,10 @@ enum Commands {
     /// Wait for the Litterbox to finish (for internal use)
     #[clap(hide = true)]
     Wait,
+
+    /// Setup home directory (for internal use)
+    #[clap(hide = true)]
+    SetupHome,
 }
 
 fn run_menu() -> Result<()> {
@@ -235,6 +239,9 @@ fn run_menu() -> Result<()> {
         }
         Commands::Wait => {
             wait_for_sessions_to_finish()?;
+        }
+        Commands::SetupHome => {
+            files::setup_home()?;
         }
     }
     Ok(())

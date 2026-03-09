@@ -486,7 +486,7 @@ pub fn enter_litterbox(lbx_name: &str) -> Result<()> {
     }
 
     let exec_child = Command::new("podman")
-        .args(["exec", "-it", &container_id, "/prep-home.sh"])
+        .args(["exec", "-it", &container_id, "/litterbox", "setup-home"])
         .spawn()
         .context("Failed to run podman command")?;
     let _ = wait_for_podman(exec_child);

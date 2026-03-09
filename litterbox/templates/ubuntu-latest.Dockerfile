@@ -32,27 +32,10 @@ RUN <<'EOF'
 cat <<'EOT' > /prep-home.sh
 #!/usr/bin/env sh
 
-MARKER="$HOME/.home-built"
-
-# If the marker file already exists, exit early
-if [ -f "$MARKER" ]; then
-    echo "Home already built; skipping."
-    exec $SHELL -l
-fi
-
-echo "Building home for the first time..."
-
-#--------------------------------------
+# -------------------------------------
 # ADAPT THIS EXAMPLE TO YOUR OWN NEEDS
-#--------------------------------------
-#curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# Create the marker file to prevent re-running
-touch "$MARKER"
-echo "Done."
-
-# Return to the normal shell
-exec $SHELL -l
+# -------------------------------------
+# curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 EOT
 
 chmod +x /prep-home.sh

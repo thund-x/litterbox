@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 use std::fs::{self, File};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use crate::env;
 
@@ -200,4 +202,28 @@ impl Drop for SshSockFile {
             log::error!("No SSH socket file to clean up: {:#?}", self.path());
         }
     }
+}
+
+pub fn setup_home() -> Result<()> {
+    let home = env::home_dir()?;
+    let marker = format!("{}/.home-built", home);
+
+    if Path::new(&marker).exists() {
+        println!("Home already built; skipping.");
+    } else {
+        println!("Building home for the first time...");
+
+        if Path::new("/prep-home.sh").exists() {
+            Command::new("/prep-home.sh")
+                .status()
+                .context("Failed to run /prep-home.sh")?;
+        }
+
+        File::create(&marker)?;
+        println!("Done.");
+    }
+
+    let shell = env::shell()?;
+    let _ = Command::new(&shell).arg("-l").exec();
+    Ok(())
 }

@@ -18,6 +18,10 @@ pub fn xdg_runtime_dir() -> Result<String> {
     get_env("XDG_RUNTIME_DIR")
 }
 
+pub fn shell() -> Result<String> {
+    get_env("SHELL")
+}
+
 pub fn litterbox_binary_path() -> String {
     std::env::args()
         .next()
