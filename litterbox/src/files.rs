@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::env;
+use crate::sandbox;
 
 fn path_relative_to_lbx_root(relative_path: &str) -> Result<PathBuf> {
     let home_dir = env::home_dir()?;
@@ -222,6 +223,8 @@ pub fn setup_home() -> Result<()> {
         File::create(&marker)?;
         println!("Done.");
     }
+
+    sandbox::apply_landlock()?;
 
     let shell = env::shell()?;
     let _ = Command::new(&shell).arg("-l").exec();

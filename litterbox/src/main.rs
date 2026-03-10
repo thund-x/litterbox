@@ -12,6 +12,7 @@ mod env;
 mod files;
 mod keys;
 mod podman;
+mod sandbox;
 mod settings;
 
 use crate::{
