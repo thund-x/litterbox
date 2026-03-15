@@ -323,6 +323,14 @@ enum KeyCommands {
         name: String,
     },
 
+    /// Import a key to Litterbox
+    Import {
+        /// The name of the new key
+        name: String,
+        /// The file path of the key
+        path: PathBuf,
+    },
+
     /// Delete an existing key
     Delete {
         /// The name of the key
@@ -360,6 +368,7 @@ enum KeyCommands {
 
 fn process_key_cmd(cmd: KeyCommands) -> Result<()> {
     let mut keys = Keys::load()?;
+
     match cmd {
         KeyCommands::List => {
             keys.print_list();
@@ -384,6 +393,9 @@ fn process_key_cmd(cmd: KeyCommands) -> Result<()> {
         }
         KeyCommands::ChangePassword {} => {
             keys.change_password()?;
+        }
+        KeyCommands::Import { name, path } => {
+            keys.import_key(&name, path)?;
         }
     }
     Ok(())

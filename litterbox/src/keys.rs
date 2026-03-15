@@ -1,13 +1,18 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use argon2::Argon2;
 use inquire::{MultiSelect, Password};
+use log::debug;
 use russh::keys::{
-    Algorithm, PrivateKey,
+    Algorithm, PrivateKey, decode_secret_key,
     pkcs8::{decode_pkcs8, encode_pkcs8_encrypted},
     ssh_key::LineEnding,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, atomic::Ordering};
+use std::{
+    io::Read,
+    path::PathBuf,
+    sync::{Arc, atomic::Ordering},
+};
 use tabled::{Table, Tabled};
 
 use crate::{
@@ -15,8 +20,9 @@ use crate::{
     files,
 };
 
-fn gen_key() -> PrivateKey {
+fn generate_private_key() -> PrivateKey {
     use russh::keys::signature::rand_core::OsRng;
+
     PrivateKey::random(&mut OsRng, Algorithm::Ed25519).expect("Ed25519 should be supported.")
 }
 
@@ -50,10 +56,10 @@ struct Key {
 }
 
 impl Key {
-    fn new(name: &str, password: &str) -> Self {
+    fn new(name: &str, password: &str, private_key: &PrivateKey) -> Self {
         Self {
             name: name.to_owned(),
-            encrypted_key: Self::encrypt(&gen_key(), password),
+            encrypted_key: Self::encrypt(private_key, password),
             attached_litterboxes: Vec::new(),
         }
     }
@@ -65,11 +71,12 @@ impl Key {
 
     fn decrypt(&self, password: &str) -> PrivateKey {
         decode_pkcs8(&self.encrypted_key, Some(password.as_bytes()))
-            .expect("Key should have been encrypted with user password.")
+            .expect("Key should have been encrypted with user password")
     }
 
     fn change_password(&mut self, old_password: &str, new_password: &str) {
         let decrypted = self.decrypt(old_password);
+
         self.encrypted_key = Self::encrypt(&decrypted, new_password);
     }
 }
@@ -100,21 +107,18 @@ impl Keys {
 
     fn save_to_file(&self) -> Result<()> {
         let path = files::keyfile_path()?;
-        let contents = ron::ser::to_string(self).context("failed to serialise keys")?;
+        let contents = ron::ser::to_string(self).context("failed to serialize keys")?;
         files::write_file(&path, &contents)
     }
 
     pub fn init_default() -> Result<Self> {
-        println!("Please enter a password to protect your keys.");
-        let password = Password::new("Key Manager Password")
+        eprintln!("Please enter a password to encrypt your keys.");
+        let password = Password::new("Password:")
             .with_display_mode(inquire::PasswordDisplayMode::Masked)
             .prompt()?;
-
-        let password_hash = hash_password(&password);
-        let keys = Vec::new();
         let s = Self {
-            password_hash,
-            keys,
+            password_hash: hash_password(&password),
+            keys: Vec::new(),
         };
 
         s.save_to_file()?;
@@ -140,22 +144,24 @@ impl Keys {
 
     pub fn change_password(&mut self) -> Result<()> {
         let old_password = self.prompt_password()?;
-        let new_password = Password::new("New Key Manager Password")
+        let new_password = Password::new("New password:")
             .with_display_mode(inquire::PasswordDisplayMode::Masked)
             .prompt()?;
 
         for key in &mut self.keys {
             key.change_password(&old_password, &new_password);
         }
+
         self.password_hash = hash_password(&new_password);
         self.save_to_file()?;
         Ok(())
     }
 
     fn prompt_password(&self) -> Result<String> {
-        println!("Please enter the password you chose for the key manager.");
+        println!("Please enter the password you chose to encrypt your keys.");
+
         loop {
-            let password = Password::new("Key Manager Password")
+            let password = Password::new("Password:")
                 .with_display_mode(inquire::PasswordDisplayMode::Masked)
                 .without_confirmation()
                 .prompt()?;
@@ -163,7 +169,7 @@ impl Keys {
             if check_password(&password, &self.password_hash) {
                 return Ok(password);
             } else {
-                println!("The provided password was not correct. Please try again.");
+                println!("The provided password is not correct. Please try again.");
             }
         }
     }
@@ -181,14 +187,20 @@ impl Keys {
             return Err(anyhow!("Key {} already exists", key_name));
         }
 
+        self.add(key_name, &generate_private_key())
+    }
+
+    pub fn add(&mut self, key_name: &str, private_key: &PrivateKey) -> Result<()> {
         let password = self.prompt_password()?;
-        self.keys.push(Key::new(key_name, &password));
-        self.save_to_file()?;
-        Ok(())
+        let key = Key::new(key_name, &password, private_key);
+
+        self.keys.push(key);
+        self.save_to_file()
     }
 
     pub fn delete(&mut self, key_name: &str) -> Result<()> {
         let mut found = false;
+
         self.keys.retain(|k| {
             if k.name == key_name {
                 found = true;
@@ -276,14 +288,14 @@ impl Keys {
     pub async fn start_ssh_server(&self, lbx_name: &str, password: &str) -> Result<()> {
         let agent_state = Arc::new(AgentState::default());
         let agent_path = start_ssh_agent(lbx_name, agent_state.clone()).await?;
-        log::debug!("agent_path: {:#?}", agent_path);
+        debug!("agent_path: {:#?}", agent_path);
 
         let stream = tokio::net::UnixStream::connect(&agent_path)
             .await
             .context("Failed to connect to SSH agent socket")?;
         let mut client = russh::keys::agent::client::AgentClient::connect(stream);
 
-        log::debug!("Registering keys to SSH agent.");
+        debug!("Registering keys to SSH agent.");
         for key in self.attached_keys(lbx_name) {
             log::info!("Registering key into agent: {}", key.name);
 
@@ -324,6 +336,50 @@ impl Keys {
             None => Err(anyhow!("Key {} does not exist", key_name)),
         }
     }
+
+    pub fn import_key(&mut self, key_name: &str, file_path: PathBuf) -> Result<()> {
+        if self.key(key_name).is_some() {
+            bail!("Key \"{key_name}\" already exists. Please select a different name.");
+        }
+
+        let mut secret = String::new();
+        std::fs::File::open(&file_path)
+            .context("When opening file path")?
+            .read_to_string(&mut secret)
+            .context("When reading file")?;
+
+        let mut password: Option<String> = None;
+        let private_key = loop {
+            use russh::keys::Error;
+            use russh::keys::ssh_key::Error as SshKeyError;
+
+            match decode_secret_key(&secret, password.as_deref()) {
+                Ok(priv_key) => break priv_key,
+
+                Err(Error::KeyIsEncrypted | Error::SshKey(SshKeyError::Crypto)) => {
+                    if password.is_none() {
+                        eprintln!("The key is encrypted. Please enter its password.");
+                    } else {
+                        eprintln!("The provided password is not correct. Please try again.");
+                    };
+
+                    password = Some(
+                        Password::new("Password:")
+                            .with_display_mode(inquire::PasswordDisplayMode::Masked)
+                            .without_confirmation()
+                            .prompt()?,
+                    );
+                }
+
+                Err(cause) => bail!(cause),
+            }
+        };
+
+        self.add(key_name, &private_key)?;
+        eprintln!("Key \"{key_name}\" has been imported.");
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -343,7 +399,7 @@ mod tests {
     #[test]
     fn can_encrypt_and_decrypt_password() {
         let password = "SomePassword";
-        let original_key = gen_key();
+        let original_key = generate_private_key();
 
         let encrypted_key = Key {
             name: String::new(),
