@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use argon2::Argon2;
 use inquire::{MultiSelect, Password};
 use log::debug;
@@ -112,7 +112,7 @@ impl Keys {
     }
 
     pub fn init_default() -> Result<Self> {
-        println!("Please enter a password to encrypt your keys.");
+        eprintln!("Please enter a password to encrypt your keys.");
         let password = Password::new("Password:")
             .with_display_mode(inquire::PasswordDisplayMode::Masked)
             .prompt()?;
@@ -128,7 +128,7 @@ impl Keys {
     pub fn load() -> Result<Self> {
         let keyfile = files::keyfile_path()?;
         if !keyfile.exists() {
-            println!("Keys file does not exist yet. A new one will be created.");
+            eprintln!("Keys file does not exist yet. A new one will be created.");
             return Self::init_default();
         }
 
@@ -140,7 +140,7 @@ impl Keys {
         let table_rows: Vec<KeyTableRow> = self.keys.iter().map(|c| c.into()).collect();
         let table = Table::new(table_rows);
 
-        println!("{table}");
+        eprintln!("{table}");
     }
 
     pub fn change_password(&mut self) -> Result<()> {
@@ -159,7 +159,7 @@ impl Keys {
     }
 
     fn prompt_password(&self) -> Result<String> {
-        println!("Please enter the password you chose to encrypt your keys.");
+        eprintln!("Please enter the password you chose to encrypt your keys.");
 
         loop {
             let password = Password::new("Password:")
@@ -170,7 +170,7 @@ impl Keys {
             if check_password(&password, &self.password_hash) {
                 return Ok(password);
             } else {
-                println!("The provided password is not correct. Please try again.");
+                eprintln!("The provided password is not correct. Please try again.");
             }
         }
     }
@@ -216,7 +216,7 @@ impl Keys {
         }
 
         self.save_to_file()?;
-        println!("Deleted key \"{key_name}\"");
+        eprintln!("Deleted key \"{key_name}\"");
         Ok(())
     }
 
@@ -236,7 +236,7 @@ impl Keys {
                 key.attached_litterboxes.push(litterbox_name.to_owned());
                 self.save_to_file()?;
 
-                println!("Attached \"{key_name}\" to litterbox \"{litterbox_name}\"!");
+                eprintln!("Attached \"{key_name}\" to litterbox \"{litterbox_name}\"!");
                 Ok(())
             }
 
@@ -257,7 +257,7 @@ impl Keys {
                     .retain(|name| !to_remove.contains(name));
 
                 self.save_to_file()?;
-                println!(
+                eprintln!(
                     "Detached {len} {lbox_word} from \"{key_name}\"!",
                     len = to_remove.len(),
                     lbox_word = if to_remove.len() == 1 {
@@ -266,7 +266,7 @@ impl Keys {
                         "litterboxes"
                     }
                 );
-                println!("N.B. running litterboxes won't be affected until they are restarted!!");
+                eprintln!("N.B. running litterboxes won't be affected until they are restarted!!");
                 Ok(())
             }
 
@@ -342,7 +342,7 @@ impl Keys {
                 println!("{}", openssh.as_str());
                 Ok(())
             }
-            None => Err(anyhow!("Key {} does not exist", key_name)),
+            None => bail!("Key \"{key_name}\" does not exist"),
         }
     }
 
@@ -367,9 +367,9 @@ impl Keys {
 
                 Err(Error::KeyIsEncrypted | Error::SshKey(SshKeyError::Crypto)) => {
                     if password.is_none() {
-                        println!("The key is encrypted. Please enter its password.");
+                        eprintln!("The key is encrypted. Please enter its password.");
                     } else {
-                        println!("The provided password is not correct. Please try again.");
+                        eprintln!("The provided password is not correct. Please try again.");
                     };
 
                     password = Some(
@@ -385,7 +385,7 @@ impl Keys {
         };
 
         self.add(key_name, &private_key)?;
-        println!("Key \"{key_name}\" has been imported.");
+        eprintln!("Key \"{key_name}\" has been imported.");
 
         Ok(())
     }
