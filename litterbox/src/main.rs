@@ -327,7 +327,7 @@ enum KeyCommands {
     Import {
         /// The name of the new key
         name: String,
-        /// The file path of the key
+        /// The file path to the key
         path: PathBuf,
     },
 
