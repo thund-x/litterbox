@@ -107,7 +107,7 @@ impl Keys {
 
     fn save_to_file(&self) -> Result<()> {
         let path = files::keyfile_path()?;
-        let contents = ron::ser::to_string(self).context("failed to serialize keys")?;
+        let contents = ron::ser::to_string(self).context("failed to serialise keys")?;
         files::write_file(&path, &contents)
     }
 
@@ -140,7 +140,7 @@ impl Keys {
         let table_rows: Vec<KeyTableRow> = self.keys.iter().map(|c| c.into()).collect();
         let table = Table::new(table_rows);
 
-        eprintln!("{table}");
+        println!("{table}");
     }
 
     pub fn change_password(&mut self) -> Result<()> {
