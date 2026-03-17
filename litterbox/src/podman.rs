@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, anyhow, ensure};
 use inquire::Confirm;
-use log::{debug, info, warn};
+use log::{debug, info, trace, warn};
 use nix::unistd::{getgid, getuid};
 use serde::Deserialize;
 use std::{
@@ -251,190 +251,178 @@ pub fn build_image(lbx_name: &str) -> Result<()> {
 }
 
 pub fn build_litterbox(lbx_name: &str) -> Result<()> {
-    let image_details = get_image_details(lbx_name)?.ok_or_else(|| {
-        anyhow!(
-            "No image found for {}. Run `litterbox build` first.",
-            lbx_name
-        )
-    })?;
+    let image_details = get_image_details(lbx_name)?
+        .ok_or_else(|| anyhow!("No image found for '{lbx_name}'. Run `litterbox build` first."))?;
     let image_id = image_details.id;
     let container_name = match get_container_details(lbx_name)? {
-        Some(details) => {
+        Some(mut details) => {
             assert!(
                 !details.names.is_empty(),
                 "All containers should have a name."
             );
+
             if details.names.len() > 1 {
-                warn!(
-                    "Container for Litterbox had more than one name. The first one will be used."
-                );
+                warn!("Litterbox container has more than one name. The first one will be used.");
             }
 
-            println!("A container for this Litterbox already exists.");
+            eprintln!("A container for this Litterbox already exists.");
+
             if Confirm::new("Would you like to replace this container?")
                 .with_default(true)
                 .prompt()?
             {
-                println!("The container will now be replaced!");
-                details.names[0].clone()
+                details.names.swap_remove(0)
             } else {
                 return Err(anyhow!("Cannot build without replacing container"));
             }
         }
+
         None => gen_random_name(),
     };
 
     let wayland_display = env::wayland_display()?;
-    let xdg_runtime_dir = env::xdg_runtime_dir()?;
+    let host_rt_dir = env::xdg_runtime_dir()?;
+    let rt_dir = "/tmp";
 
-    let litterbox_home = files::lbx_home_path(lbx_name)?;
-    fs::create_dir_all(&litterbox_home).context("Failed to create litterbox home directory")?;
+    let lbx_home_path = files::lbx_home_path(lbx_name)?;
+    fs::create_dir_all(&lbx_home_path).context("Failed to create litterbox home directory")?;
 
     let ssh_sock = SshSockFile::new(lbx_name, true)?;
-    let ssh_sock_path = ssh_sock
-        .path()
-        .to_str()
-        .expect("SSH socket path should be valid string");
-    let ssh_sock_mount = format!("{ssh_sock_path}:/tmp/ssh-agent.sock");
-
     let settings = LitterboxSettings::load_or_prompt(lbx_name)?;
 
-    let gpu_device = detect_gpu_device();
-    if gpu_device.is_none() {
-        warn!("No GPU device found. GPU acceleration will not be available in the Litterbox.");
+    let session_lock_file_path = files::session_lock_path(lbx_name)?;
+
+    if let Some(parent) = session_lock_file_path.parent() {
+        fs::create_dir_all(parent)
+            .context("Failed to create session lock file parent directory")?;
     }
 
-    let hostname = format!("lbx-{lbx_name}");
-    let wayland_display_env = format!("WAYLAND_DISPLAY={wayland_display}");
-    let wayland_socket_mount =
-        format!("{xdg_runtime_dir}/{wayland_display}:/tmp/{wayland_display}");
-    let home_mount = format!(
-        "{}:/home/{LBX_USER}",
-        litterbox_home.to_str().expect("Invalid litterbox_home.")
-    );
-    let label = format!("work.litterbox.name={lbx_name}");
+    fs::File::create(&session_lock_file_path).context("Failed to create session lock file")?;
 
-    let litterbox_mount = format!("{}:/litterbox:ro", env::litterbox_binary_path());
+    let mut cmd = Command::new("podman");
+    cmd.arg("create");
 
-    let session_lock_path = files::session_lock_path(lbx_name)?;
-    let session_lock_path_str = session_lock_path
-        .to_str()
-        .expect("Session lock path should be valid.");
+    cmd.arg("--replace");
+    cmd.args(["--entrypoint", "[\"/litterbox\", \"wait\"]"]);
+    cmd.args(["--env", &format!("HOME=/home/{LBX_USER}")]);
+    cmd.args(["--env", &format!("SSH_AUTH_SOCK={rt_dir}/ssh-agent.sock")]);
+    cmd.args(["--env", &format!("XDG_RUNTIME_DIR={rt_dir}")]);
+    cmd.args(["--env", "XDG_SESSION_TYPE=wayland"]);
+    cmd.args(["--env", &format!("WAYLAND_DISPLAY={wayland_display}")]);
+    cmd.args(["--hostname", &format!("lbx-{lbx_name}")]);
+    cmd.args(["--label", &format!("work.litterbox.name={lbx_name}")]);
+    cmd.args(["--name", &container_name]);
+    cmd.args(["--network", settings.network_mode.podman_args()]);
+    cmd.args(["--security-opt", "label=disable"]);
+    cmd.args(["--userns", "keep-id"]);
 
-    if session_lock_path.exists() {
-        log::warn!("Deleting old session lock file: {:#?}", session_lock_path);
-        fs::remove_file(&session_lock_path)?;
-    } else if let Some(parent) = session_lock_path.parent() {
-        fs::create_dir_all(parent)?;
+    // It doesn't appear to be used within the container
+    // cmd.arg("--volume");
+    // cmd.arg(session_lock_file_path);
+
+    let mut litterbox_bin_mount = env::litterbox_binary_path().into_os_string();
+    litterbox_bin_mount.push(":/litterbox:ro");
+
+    cmd.arg("--volume");
+    cmd.arg(litterbox_bin_mount);
+
+    let mut ssh_sock_mount = ssh_sock.path().as_os_str().to_owned();
+    ssh_sock_mount.push(":");
+    ssh_sock_mount.push(rt_dir);
+    ssh_sock_mount.push("/ssh-agent.sock");
+
+    cmd.arg("--volume");
+    cmd.arg(ssh_sock_mount);
+
+    let wayland_display_mount =
+        format!("{host_rt_dir}/{wayland_display}:{rt_dir}/{wayland_display}");
+
+    cmd.arg("--volume");
+    cmd.arg(wayland_display_mount);
+
+    let mut home_mount = lbx_home_path.into_os_string();
+    home_mount.push(":/home/");
+    home_mount.push(LBX_USER);
+
+    cmd.arg("--volume");
+    cmd.arg(home_mount);
+
+    match detect_gpu_device() {
+        Some(dev) => {
+            debug!("Appending GPU device args for '{}'", dev.device_path());
+            cmd.args(["--volume", dev.volume_mount()]);
+            cmd.args(["--device", dev.device_path()]);
+        }
+
+        None => {
+            warn!("No GPU device found! GPU acceleration will not be available in the Litterbox.")
+        }
     }
-    fs::File::create(&session_lock_path)?;
 
-    let session_lock_mount = format!("{session_lock_path_str}:/session.lock:ro");
-    let home_dir = format!("HOME=/home/{LBX_USER}");
+    if settings.expose_pipewire {
+        let mut pipewire_mount = files::pipewire_socket_path()?.into_os_string();
+        pipewire_mount.push(":");
+        pipewire_mount.push(rt_dir);
+        pipewire_mount.push("/pipewire-0");
 
-    let mut full_args = vec![
-        "create",
-        "--replace",
-        "--name",
-        &container_name,
-        "--userns=keep-id",
-        "--hostname",
-        &hostname,
-        "--network",
-        settings.network_mode.podman_args(),
-        "--security-opt=label=disable",
-        "-v",
-        &litterbox_mount,
-        "-v",
-        &session_lock_mount,
-        "--entrypoint",
-        "[\"/litterbox\", \"wait\"]",
-        "-e",
-        &home_dir,
-        "-e",
-        "SSH_AUTH_SOCK=/tmp/ssh-agent.sock",
-        "-v",
-        &ssh_sock_mount,
-        "-e",
-        &wayland_display_env,
-        "-e",
-        "XDG_SESSION_TYPE=wayland",
-        "-e",
-        "XDG_RUNTIME_DIR=/tmp",
-        "-v",
-        &wayland_socket_mount,
-        "-v",
-        &home_mount,
-        "--label",
-        &label,
-    ];
-
-    if let Some(gpu) = &gpu_device {
-        debug!("Appending GPU device args for {}", gpu.device_path());
-        full_args.extend_from_slice(&["--device", gpu.device_path(), "-v", gpu.volume_mount()]);
+        debug!("Appending PipeWire socket args");
+        cmd.arg("--volume");
+        cmd.arg(pipewire_mount);
     }
 
     if settings.support_tuntap {
         debug!("Appending TUN/TAP args");
-        full_args.extend_from_slice(&["--cap-add=NET_ADMIN", "--device", "/dev/net/tun"]);
+        cmd.args(["--device", "/dev/net/tun"]);
+        cmd.args(["--cap-add", "NET_ADMIN"]);
     }
 
     if settings.support_ping {
         debug!("Appending ping args");
-        full_args.push("--cap-add=NET_RAW");
+        cmd.args(["--cap-add", "NET_RAW"]);
     }
 
     if settings.packet_forwarding {
         debug!("Appending packet forwarding args");
-        full_args.extend_from_slice(&[
-            "--sysctl",
-            "net.ipv4.ip_forward=1",
-            "--sysctl",
-            "net.ipv6.conf.all.forwarding=1",
-        ]);
-    }
-
-    let pipewire_path = files::pipewire_socket_path()?;
-    let pipewire_path = pipewire_path.to_str().expect("Path should be valid string");
-    let pipewire_socket_mount = format!("{pipewire_path}:/tmp/pipewire-0");
-    if settings.expose_pipewire {
-        debug!("Appending PipeWire socket args");
-        full_args.extend_from_slice(&["-v", &pipewire_socket_mount]);
+        cmd.args(["--sysctl", "net.ipv4.ip_forward=1"]);
+        cmd.args(["--sysctl", "net.ipv6.conf.all.forwarding=1"]);
     }
 
     if settings.keep_groups {
         debug!("Appending keep groups args");
-        full_args.push("--group-add=keep-groups");
+        cmd.args(["--group-add", "keep-groups"]);
     }
 
     if settings.unconfine_seccomp {
         debug!("Disabling seccomp confinement");
-        full_args.extend_from_slice(&["--security-opt", "seccomp=unconfined"]);
+        cmd.args(["--security-opt", "seccomp=unconfined"]);
     }
 
     if settings.expose_kfd {
         debug!("Appending KFD device args");
-        full_args.extend_from_slice(&["--device", "/dev/kfd"]);
+        cmd.args(["--device", "/dev/kfd"]);
     }
 
-    let shm_size_arg = settings.shm_size_gb.map(|gb| format!("{}G", gb));
-    if let Some(ref shm_size) = shm_size_arg {
-        debug!("Appending shm-size args: {}", shm_size);
-        full_args.extend_from_slice(&["--shm-size", shm_size]);
+    if let Some(shm_size) = settings.shm_size_gb.map(|gb| format!("{gb}G")) {
+        debug!("Appending shm-size args: {shm_size}");
+        cmd.args(["--shm-size", &shm_size]);
     }
 
     // It's best to have the image_id as the final argument
-    full_args.push(&image_id);
+    cmd.arg(&image_id);
 
-    debug!("build_litterbox full_args: {:#?}", full_args);
+    trace!(
+        "Litterbox build arguments: {}",
+        cmd.get_args().fold(String::new(), |mut acc, arg| {
+            acc.push_str(&arg.to_string_lossy());
+            acc.push(' ');
+            acc
+        })
+    );
 
-    let child = Command::new("podman")
-        .args(full_args)
-        .spawn()
-        .context("Failed to run podman command")?;
-
+    let child = cmd.spawn().context("Failed to run podman command")?;
     wait_for_podman(child)?;
-    info!("Created container named {container_name}.");
+
+    info!("Created container '{container_name}'.");
     Ok(())
 }
 

@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use anyhow::{Context, Result};
 
 fn get_env(lbx_name: &'static str) -> Result<String> {
@@ -22,10 +24,6 @@ pub fn shell() -> Result<String> {
     get_env("SHELL")
 }
 
-pub fn litterbox_binary_path() -> String {
-    std::env::current_exe()
-        .expect("Binary path should be defined.")
-        .to_str()
-        .expect("Binary path should be valid.")
-        .to_string()
+pub fn litterbox_binary_path() -> PathBuf {
+    std::env::current_exe().expect("Binary path should be defined.")
 }

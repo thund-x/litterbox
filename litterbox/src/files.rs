@@ -78,6 +78,7 @@ pub fn read_pids_from_session_lockfile(path: &Path) -> Result<Vec<u32>> {
     }
 
     let content = read_file(path)?;
+
     content
         .lines()
         .filter(|line| !line.trim().is_empty())
@@ -114,8 +115,8 @@ pub fn cleanup_dead_pids_from_session_lockfile(path: &Path) -> Result<()> {
 
 pub fn pipewire_socket_path() -> Result<PathBuf> {
     let xdg_runtime_dir = env::xdg_runtime_dir()?;
-    let path = format!("{xdg_runtime_dir}/pipewire-0");
-    Ok(Path::new(&path).to_path_buf())
+
+    Ok(format!("{xdg_runtime_dir}/pipewire-0").into())
 }
 
 pub fn write_file(path: &Path, contents: &str) -> Result<()> {

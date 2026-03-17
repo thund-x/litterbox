@@ -15,7 +15,7 @@ use crate::files::SshSockFile;
 #[derive(Clone)]
 struct AskAgent {
     lbx_name: String,
-    litterbox_path: String,
+    litterbox_path: PathBuf,
     agent_state: Arc<AgentState>,
 }
 
