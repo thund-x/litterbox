@@ -115,11 +115,11 @@ fn gen_random_name() -> String {
 #[command(version, about, long_about = None)]
 struct Args {
     #[command(subcommand)]
-    command: Commands,
+    command: Command,
 }
 
 #[derive(Subcommand, Debug)]
-enum Commands {
+enum Command {
     /// Define a new Litterbox using a template Dockerfile
     #[clap(visible_alias("def"))]
     Define {
@@ -176,7 +176,7 @@ enum Commands {
 
     /// Manage SSH keys that can be exposed to Litterboxes
     #[command(subcommand)]
-    Keys(KeyCommands),
+    Keys(KeysCommand),
 
     /// Attach a device to a Litterbox (the device fille be created in the home directory)
     #[clap(visible_alias("dev"))]
@@ -236,20 +236,20 @@ enum Commands {
     },
 }
 
-impl Commands {
+impl Command {
     fn run(self) -> Result<()> {
         match self {
-            Commands::Confirm { request, lbx_name } => prompt_confirmation(&request, &lbx_name),
+            Self::Confirm { request, lbx_name } => prompt_confirmation(&request, &lbx_name),
 
-            Commands::Define { name } => define_litterbox(&name)?,
+            Self::Define { name } => define_litterbox(&name)?,
 
-            Commands::Delete { name } => delete_litterbox(&name)?,
+            Self::Delete { name } => delete_litterbox(&name)?,
 
-            Commands::Keys(cmd) => cmd.run()?,
+            Self::Keys(cmd) => cmd.run()?,
 
-            Commands::Wait => wait_for_sessions_to_finish()?,
+            Self::Wait => wait_for_sessions_to_finish()?,
 
-            Commands::Enter {
+            Self::Enter {
                 name,
                 interactive,
                 tty,
@@ -259,12 +259,12 @@ impl Commands {
                 root,
             } => enter_litterbox(&name, interactive, tty, workdir, command, args, root)?,
 
-            Commands::Build { name } => {
+            Self::Build { name } => {
                 build_image(&name)?;
                 build_litterbox(&name)?;
             }
 
-            Commands::List => {
+            Self::List => {
                 let containers = list_containers()?;
                 let table_rows: Vec<ContainerTableRow> =
                     containers.0.iter().map(|c| c.into()).collect();
@@ -273,13 +273,13 @@ impl Commands {
                 println!("{table}");
             }
 
-            Commands::Device { name, path } => {
+            Self::Device { name, path } => {
                 let dest_path = attach_device(&name, &path)?;
 
                 println!("Device attached at {:#?}!", dest_path);
             }
 
-            Commands::Daemon { name } => {
+            Self::Daemon { name } => {
                 use std::io::{Read, stdin};
 
                 let mut password = String::new();
@@ -291,7 +291,7 @@ impl Commands {
                 rt.block_on(daemon::run(&name, password))?;
             }
 
-            Commands::Entrypoint {
+            Self::Entrypoint {
                 root,
                 uid,
                 gid,
@@ -305,7 +305,7 @@ impl Commands {
 }
 
 #[derive(Subcommand, Debug)]
-enum KeyCommands {
+enum KeysCommand {
     /// List all the keys are being managed
     #[clap(visible_alias("ls"))]
     List,
@@ -359,29 +359,29 @@ enum KeyCommands {
     ChangePassword {},
 }
 
-impl KeyCommands {
+impl KeysCommand {
     fn run(self) -> Result<()> {
         let mut keys = Keys::load()?;
 
         match self {
-            KeyCommands::Attach {
+            Self::Attach {
                 key_name,
                 litterbox_name,
             } => keys.attach(&key_name, &litterbox_name)?,
 
-            KeyCommands::ChangePassword {} => keys.change_password()?,
+            Self::ChangePassword {} => keys.change_password()?,
 
-            KeyCommands::Delete { name } => keys.delete(&name)?,
+            Self::Delete { name } => keys.delete(&name)?,
 
-            KeyCommands::Detach { key_name } => keys.detach(&key_name)?,
+            Self::Detach { key_name } => keys.detach(&key_name)?,
 
-            KeyCommands::Generate { name } => keys.generate(&name)?,
+            Self::Generate { name } => keys.generate(&name)?,
 
-            KeyCommands::Import { name, path } => keys.import_key(&name, path)?,
+            Self::Import { name, path } => keys.import_key(&name, path)?,
 
-            KeyCommands::List => keys.print_list(),
+            Self::List => keys.print_list(),
 
-            KeyCommands::Print { key_name, private } => keys.print(&key_name, private)?,
+            Self::Print { key_name, private } => keys.print(&key_name, private)?,
         }
 
         Ok(())
