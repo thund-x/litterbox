@@ -317,9 +317,12 @@ pub fn build_litterbox(lbx_name: &str) -> Result<()> {
     cmd.args(["--security-opt", "label=disable"]);
     cmd.args(["--userns", "keep-id"]);
 
-    // It doesn't appear to be used within the container
-    // cmd.arg("--volume");
-    // cmd.arg(session_lock_file_path);
+    // The `wait` command uses it to know when it can exit.
+    let mut session_lock_mount = session_lock_file_path.into_os_string();
+    session_lock_mount.push(":/session.lock:ro");
+
+    cmd.arg("--volume");
+    cmd.arg(session_lock_mount);
 
     let mut litterbox_bin_mount = env::litterbox_binary_path().into_os_string();
     litterbox_bin_mount.push(":/litterbox:ro");
