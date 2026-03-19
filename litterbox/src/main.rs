@@ -275,7 +275,7 @@ impl Command {
             Self::Device { name, path } => {
                 let dest_path = attach_device(&name, &path)?;
 
-                println!("Device attached at {:#?}!", dest_path);
+                println!("Device attached at {dest_path:#?}!");
             }
 
             Self::Daemon { name } => {

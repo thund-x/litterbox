@@ -620,7 +620,7 @@ pub fn delete_litterbox(lbx_name: &str) -> Result<()> {
                 .with_help_message("This will delete the Dockerfile and settings file")
                 .prompt();
 
-        if let Ok(true) = should_delete_definition {
+        if should_delete_definition.is_ok_and(|x| x) {
             fs::remove_file(&dockerfile_path)
                 .inspect(|_| info!("Dockerfile deleted!"))
                 .or_else(|cause| {

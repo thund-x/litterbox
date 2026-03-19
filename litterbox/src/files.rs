@@ -149,21 +149,25 @@ pub fn wait_for_sessions_to_finish() -> Result<()> {
     };
 
     if is_empty() {
-        println!("Session already empty, Litterbox finished.");
+        eprintln!("Session already empty, Litterbox finished.");
+
         return Ok(());
     }
 
     let inotify = Inotify::init(InitFlags::empty())?;
     inotify.add_watch(session_lock_path, AddWatchFlags::IN_MODIFY)?;
 
-    println!("Litterbox started, waiting for session to become empty.");
+    eprintln!("Litterbox started, waiting for session to become empty.");
+
     loop {
         let _ = inotify.read_events()?;
+
         if is_empty() {
             break;
         }
     }
-    println!("Session empty, Litterbox finished.");
+
+    eprintln!("Session empty, Litterbox finished.");
 
     Ok(())
 }
