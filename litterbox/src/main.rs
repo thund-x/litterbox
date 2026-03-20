@@ -7,6 +7,7 @@ use std::{ffi::OsString, fmt::Display, path::PathBuf, process::Output};
 use tabled::{Table, Tabled};
 
 mod agent;
+mod commands;
 mod daemon;
 mod devices;
 mod env;
