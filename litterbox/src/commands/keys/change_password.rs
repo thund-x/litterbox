@@ -7,7 +7,9 @@ use clap::Args;
 pub struct Command {}
 
 impl Command {
-    pub fn run(self, keys: Keys) -> Result<()> {
+    pub fn run(self, mut keys: Keys) -> Result<()> {
+        keys.change_password()?;
+
         Ok(())
     }
 }

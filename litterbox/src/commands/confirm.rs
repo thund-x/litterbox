@@ -1,3 +1,4 @@
+use crate::agent::prompt_confirmation;
 use anyhow::Result;
 use clap::Args;
 
@@ -15,6 +16,8 @@ pub struct Command {
 
 impl Command {
     pub fn run(self) -> Result<()> {
+        prompt_confirmation(&self.request, &self.lbx_name);
+
         Ok(())
     }
 }

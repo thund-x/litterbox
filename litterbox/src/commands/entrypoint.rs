@@ -4,6 +4,8 @@ use anyhow::Result;
 use clap::Args;
 use nix::libc::{gid_t, uid_t};
 
+use crate::sandbox::entrypoint;
+
 /// Container entrypoint (for internal use)
 #[derive(Args, Debug)]
 pub struct Command {
@@ -29,6 +31,8 @@ pub struct Command {
 
 impl Command {
     pub fn run(self) -> Result<()> {
+        entrypoint(self.root, self.uid, self.gid, self.command, self.args)?;
+
         Ok(())
     }
 }

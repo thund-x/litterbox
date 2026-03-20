@@ -15,6 +15,8 @@ pub struct Command {
 
 impl Command {
     pub fn run(self, keys: Keys) -> Result<()> {
+        keys.print(&self.key_name, self.private)?;
+
         Ok(())
     }
 }

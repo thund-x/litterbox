@@ -8,6 +8,8 @@ pub struct Command {}
 
 impl Command {
     pub fn run(self, keys: Keys) -> Result<()> {
+        keys.print_list();
+
         Ok(())
     }
 }

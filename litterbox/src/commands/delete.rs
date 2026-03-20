@@ -1,6 +1,8 @@
 use anyhow::Result;
 use clap::Args;
 
+use crate::podman::delete_litterbox;
+
 /// Delete an existing Litterbox
 #[derive(Args, Debug)]
 pub struct Command {
@@ -10,6 +12,8 @@ pub struct Command {
 
 impl Command {
     pub fn run(self) -> Result<()> {
+        delete_litterbox(&self.name)?;
+
         Ok(())
     }
 }

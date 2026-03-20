@@ -3,6 +3,8 @@ use std::{ffi::OsString, path::PathBuf};
 use anyhow::Result;
 use clap::Args;
 
+use crate::podman::enter_litterbox;
+
 /// Enter an existing Litterbox
 #[derive(Args, Debug)]
 pub struct Command {
@@ -36,6 +38,18 @@ pub struct Command {
 
 impl Command {
     pub fn run(self) -> Result<()> {
+        enter_litterbox(
+            &self.name,
+            self.interactive,
+            self.tty,
+            self.workdir,
+            self.command,
+            self.args,
+            self.root,
+        )?;
+
+        eprintln!("Exited Litterbox");
+
         Ok(())
     }
 }

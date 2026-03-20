@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, anyhow, ensure};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use inquire::Confirm;
 use log::{debug, info, trace, warn};
 use nix::unistd::{getgid, getuid};
@@ -12,7 +12,7 @@ use std::{
 };
 
 use crate::{
-    daemon, define_litterbox, env, extract_stdout,
+    daemon, env, extract_stdout,
     files::{self, SshSockFile},
     gen_random_name,
     keys::Keys,
@@ -219,12 +219,11 @@ pub fn build_image(lbx_name: &str) -> Result<()> {
     };
 
     let dockerfile_path = files::dockerfile_path(lbx_name)?;
+
     if !dockerfile_path.exists() {
-        eprintln!(
-            "{} does not exist. Please make one or a use a provided template.",
-            dockerfile_path.display()
+        bail!(
+            "{dockerfile_path:?} does not exist. Please run `litterbox define` to create a template.",
         );
-        define_litterbox(lbx_name)?;
     }
 
     let child = Command::new("podman")
