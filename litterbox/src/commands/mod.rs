@@ -1,16 +1,16 @@
 use clap::Subcommand;
 
-pub mod build;
-pub mod confirm;
-pub mod daemon;
-pub mod define;
-pub mod delete;
-pub mod device;
-pub mod enter;
-pub mod entrypoint;
-pub mod keys;
-pub mod list;
-pub mod wait;
+mod build;
+mod confirm;
+mod daemon;
+mod define;
+mod delete;
+mod device;
+mod enter;
+mod entrypoint;
+mod keys;
+mod list;
+mod wait;
 
 #[derive(Subcommand, Debug)]
 pub enum Command {

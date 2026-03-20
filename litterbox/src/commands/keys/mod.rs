@@ -2,14 +2,14 @@ use crate::keys::Keys;
 use anyhow::Result;
 use clap::Subcommand;
 
-pub mod attach;
-pub mod change_password;
-pub mod delete;
-pub mod detach;
-pub mod generate;
-pub mod import;
-pub mod list;
-pub mod print;
+mod attach;
+mod change_password;
+mod delete;
+mod detach;
+mod generate;
+mod import;
+mod list;
+mod print;
 
 /// Manage SSH keys that can be exposed to Litterboxes
 #[derive(Subcommand, Debug)]
