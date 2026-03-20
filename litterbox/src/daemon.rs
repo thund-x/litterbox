@@ -60,8 +60,8 @@ pub fn is_running(lbx_name: &str) -> Result<bool> {
 
     std::fs::read_to_string(&daemon_lock)
         .ok()
-        .and_then(|pid| pid.trim().parse::<u32>().ok())
-        .map(|pid| Pid::from_raw(pid as i32))
+        .and_then(|pid| pid.trim().parse::<i32>().ok())
+        .map(Pid::from_raw)
         .map(|pid| Ok(kill(pid, None).is_ok()))
         .unwrap_or(Ok(false))
 }
