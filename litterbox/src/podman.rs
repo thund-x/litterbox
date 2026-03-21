@@ -281,9 +281,12 @@ pub fn build_litterbox(lbx_name: &str) -> Result<()> {
         None => gen_random_name(),
     };
 
+    // --userns=keep-id is used, so this is fine to be used in the container.
+    let uid = getuid();
+
+    let rt_dir = PathBuf::from(&format!("/run/user/{uid}"));
     let wayland_display = env::wayland_display()?;
     let host_rt_dir = env::xdg_runtime_dir()?;
-    let rt_dir = "/tmp";
 
     let lbx_home_path = files::lbx_home_path(lbx_name)?;
     fs::create_dir_all(&lbx_home_path).context("Failed to create litterbox home directory")?;
@@ -306,8 +309,14 @@ pub fn build_litterbox(lbx_name: &str) -> Result<()> {
     cmd.arg("--replace");
     cmd.args(["--entrypoint", "[\"/litterbox\", \"wait\"]"]);
     cmd.args(["--env", &format!("HOME=/home/{LBX_USER}")]);
-    cmd.args(["--env", &format!("SSH_AUTH_SOCK={rt_dir}/ssh-agent.sock")]);
-    cmd.args(["--env", &format!("XDG_RUNTIME_DIR={rt_dir}")]);
+    cmd.args([
+        "--env",
+        &format!("SSH_AUTH_SOCK={}/ssh-agent.sock", rt_dir.to_string_lossy()),
+    ]);
+    cmd.args([
+        "--env",
+        &format!("XDG_RUNTIME_DIR={}", rt_dir.to_string_lossy()),
+    ]);
     cmd.args(["--env", "XDG_SESSION_TYPE=wayland"]);
     cmd.args(["--env", &format!("WAYLAND_DISPLAY={wayland_display}")]);
     cmd.args(["--hostname", &format!("lbx-{lbx_name}")]);
@@ -332,14 +341,19 @@ pub fn build_litterbox(lbx_name: &str) -> Result<()> {
 
     let mut ssh_sock_mount = ssh_sock.path().as_os_str().to_owned();
     ssh_sock_mount.push(":");
-    ssh_sock_mount.push(rt_dir);
+    ssh_sock_mount.push(&rt_dir);
     ssh_sock_mount.push("/ssh-agent.sock");
 
     cmd.arg("--volume");
     cmd.arg(ssh_sock_mount);
 
-    let wayland_display_mount =
-        format!("{host_rt_dir}/{wayland_display}:{rt_dir}/{wayland_display}");
+    let mut wayland_display_mount = OsString::from(&host_rt_dir);
+    wayland_display_mount.push("/");
+    wayland_display_mount.push(&wayland_display);
+    wayland_display_mount.push(":");
+    wayland_display_mount.push(&rt_dir);
+    wayland_display_mount.push("/");
+    wayland_display_mount.push(&wayland_display);
 
     cmd.arg("--volume");
     cmd.arg(wayland_display_mount);
