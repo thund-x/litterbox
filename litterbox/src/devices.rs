@@ -8,7 +8,7 @@ use std::process::Command;
 use crate::files::lbx_home_path;
 
 fn mknod(major_num: u64, minor_num: u64, dev_type: &str, path: &Path) -> Result<()> {
-    println!(
+    eprintln!(
         "Root permissions are required to create a device node. Please enter your password if prompted."
     );
 

@@ -1,8 +1,8 @@
-use anyhow::Result;
+use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
 use inquire_derive::Selectable;
 use log::info;
-use nix::libc::{gid_t, uid_t};
+use nix::unistd::{Gid, Uid};
 use std::{ffi::OsString, fmt::Display, path::PathBuf, process::Output};
 use tabled::{Table, Tabled};
 
@@ -50,8 +50,9 @@ fn extract_stdout(output: &Output) -> Result<&str> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
 
-        return Err(anyhow::anyhow!("Podman command failed: {}", stderr));
+        bail!("Podman command failed: {stderr}");
     }
+
     Ok(str::from_utf8(&output.stdout)?)
 }
 
@@ -88,23 +89,23 @@ impl Display for Template {
 
 fn define_litterbox(lbx_name: &str) -> Result<()> {
     let dockerfile = dockerfile_path(lbx_name)?;
+
     if dockerfile.exists() {
-        return Err(anyhow::anyhow!(
-            "Dockerfile already exists at {}",
-            dockerfile.display()
-        ));
+        bail!("Dockerfile already exists at {dockerfile:?}");
     }
 
     let template = Template::select("Choose a template:").prompt()?;
 
     write_file(dockerfile.as_path(), template.contents())?;
-    info!("Default Dockerfile written to {}", dockerfile.display());
+    info!("Default Dockerfile written to {dockerfile:?}");
+
     Ok(())
 }
 
 fn gen_random_name() -> String {
     let mut generator = names::Generator::with_naming(names::Name::Numbered);
     let name = generator.next().expect("Name should not be none.");
+
     format!("lbx-{name}")
 }
 
@@ -113,11 +114,11 @@ fn gen_random_name() -> String {
 #[command(version, about, long_about = None)]
 struct Args {
     #[command(subcommand)]
-    command: Commands,
+    command: Command,
 }
 
 #[derive(Subcommand, Debug)]
-enum Commands {
+enum Command {
     /// Define a new Litterbox using a template Dockerfile
     #[clap(visible_alias("def"))]
     Define {
@@ -174,7 +175,7 @@ enum Commands {
 
     /// Manage SSH keys that can be exposed to Litterboxes
     #[command(subcommand)]
-    Keys(KeyCommands),
+    Keys(KeysCommand),
 
     /// Attach a device to a Litterbox (the device fille be created in the home directory)
     #[clap(visible_alias("dev"))]
@@ -218,12 +219,12 @@ enum Commands {
         root: bool,
 
         /// The UID to drop to if dropping privileges
-        #[arg(long)]
-        uid: uid_t,
+        #[arg(long, value_parser = |x: &str| x.parse().map(Uid::from_raw))]
+        uid: Uid,
 
         /// The GID to drop to if dropping privileges
-        #[arg(long)]
-        gid: gid_t,
+        #[arg(long, value_parser = |x: &str| x.parse().map(Gid::from_raw))]
+        gid: Gid,
 
         /// The command to execute instead of the login shell
         command: Option<OsString>,
@@ -234,77 +235,76 @@ enum Commands {
     },
 }
 
-fn run_menu() -> Result<()> {
-    let args = Args::parse();
-    match args.command {
-        Commands::Define { name } => {
-            define_litterbox(&name)?;
-            println!("Litterbox defined!");
-        }
-        Commands::Build { name } => {
-            build_image(&name)?;
-            build_litterbox(&name)?;
-            println!("Litterbox built!");
-        }
-        Commands::Enter {
-            name,
-            interactive,
-            tty,
-            workdir,
-            command,
-            args,
-            root,
-        } => {
-            enter_litterbox(&name, interactive, tty, workdir, command, args, root)?;
-            println!("Exited Litterbox...")
-        }
-        Commands::List => {
-            let containers = list_containers()?;
-            let table_rows: Vec<ContainerTableRow> =
-                containers.0.iter().map(|c| c.into()).collect();
-            let table = Table::new(table_rows);
-            println!("{table}");
-        }
-        Commands::Delete { name } => {
-            delete_litterbox(&name)?;
-        }
-        Commands::Keys(cmd) => process_key_cmd(cmd)?,
-        Commands::Device { name, path } => {
-            let dest_path = attach_device(&name, &path)?;
-            println!("Device attached at {:#?}!", dest_path);
-        }
-        Commands::Confirm { request, lbx_name } => {
-            prompt_confirmation(&request, &lbx_name);
-        }
-        Commands::Daemon { name } => {
-            use std::io::{Read, stdin};
+impl Command {
+    fn run(self) -> Result<()> {
+        match self {
+            Self::Confirm { request, lbx_name } => prompt_confirmation(&request, &lbx_name),
 
-            let mut password = String::new();
-            stdin().read_to_string(&mut password)?;
-            let password = password.trim();
+            Self::Define { name } => define_litterbox(&name)?,
 
-            // We wait to create the runtime here since only this one command depends on it.
-            let rt = tokio::runtime::Runtime::new().expect("Tokio runtime should start");
-            rt.block_on(daemon::run(&name, password))?;
+            Self::Delete { name } => delete_litterbox(&name)?,
+
+            Self::Keys(cmd) => cmd.run()?,
+
+            Self::Wait => wait_for_sessions_to_finish()?,
+
+            Self::Enter {
+                name,
+                interactive,
+                tty,
+                workdir,
+                command,
+                args,
+                root,
+            } => enter_litterbox(&name, interactive, tty, workdir, command, args, root)?,
+
+            Self::Build { name } => {
+                build_image(&name)?;
+                build_litterbox(&name)?;
+            }
+
+            Self::List => {
+                let containers = list_containers()?;
+                let table_rows: Vec<ContainerTableRow> =
+                    containers.0.iter().map(|c| c.into()).collect();
+                let table = Table::new(table_rows);
+
+                println!("{table}");
+            }
+
+            Self::Device { name, path } => {
+                let dest_path = attach_device(&name, &path)?;
+
+                println!("Device attached at {dest_path:#?}!");
+            }
+
+            Self::Daemon { name } => {
+                use std::io::{Read, stdin};
+
+                let mut password = String::new();
+                stdin().read_to_string(&mut password)?;
+                let password = password.trim();
+
+                // We wait to create the runtime here since only this one command depends on it.
+                let rt = tokio::runtime::Runtime::new().expect("Tokio runtime should start");
+                rt.block_on(daemon::run(&name, password))?;
+            }
+
+            Self::Entrypoint {
+                root,
+                uid,
+                gid,
+                command,
+                args,
+            } => entrypoint(root, uid, gid, command, args)?,
         }
-        Commands::Wait => {
-            wait_for_sessions_to_finish()?;
-        }
-        Commands::Entrypoint {
-            root,
-            uid,
-            gid,
-            command,
-            args,
-        } => {
-            entrypoint(root, uid, gid, command, args)?;
-        }
+
+        Ok(())
     }
-    Ok(())
 }
 
 #[derive(Subcommand, Debug)]
-enum KeyCommands {
+enum KeysCommand {
     /// List all the keys are being managed
     #[clap(visible_alias("ls"))]
     List,
@@ -358,39 +358,33 @@ enum KeyCommands {
     ChangePassword {},
 }
 
-fn process_key_cmd(cmd: KeyCommands) -> Result<()> {
-    let mut keys = Keys::load()?;
+impl KeysCommand {
+    fn run(self) -> Result<()> {
+        let mut keys = Keys::load()?;
 
-    match cmd {
-        KeyCommands::List => {
-            keys.print_list();
+        match self {
+            Self::Attach {
+                key_name,
+                litterbox_name,
+            } => keys.attach(&key_name, &litterbox_name)?,
+
+            Self::ChangePassword {} => keys.change_password()?,
+
+            Self::Delete { name } => keys.delete(&name)?,
+
+            Self::Detach { key_name } => keys.detach(&key_name)?,
+
+            Self::Generate { name } => keys.generate(&name)?,
+
+            Self::Import { name, path } => keys.import_key(&name, path)?,
+
+            Self::List => keys.print_list(),
+
+            Self::Print { key_name, private } => keys.print(&key_name, private)?,
         }
-        KeyCommands::Generate { name } => {
-            keys.generate(&name)?;
-        }
-        KeyCommands::Delete { name } => {
-            keys.delete(&name)?;
-        }
-        KeyCommands::Attach {
-            key_name,
-            litterbox_name,
-        } => {
-            keys.attach(&key_name, &litterbox_name)?;
-        }
-        KeyCommands::Detach { key_name } => {
-            keys.detach(&key_name)?;
-        }
-        KeyCommands::Print { key_name, private } => {
-            keys.print(&key_name, private)?;
-        }
-        KeyCommands::ChangePassword {} => {
-            keys.change_password()?;
-        }
-        KeyCommands::Import { name, path } => {
-            keys.import_key(&name, path)?;
-        }
+
+        Ok(())
     }
-    Ok(())
 }
 
 fn main() -> Result<()> {
@@ -401,8 +395,11 @@ fn main() -> Result<()> {
         eprintln!(
             "run0/sudo is not supported inside this session. Use 'litterbox enter --root <name>' to enter as root."
         );
+
         return Ok(());
     }
 
-    run_menu()
+    let args = Args::parse();
+
+    args.command.run()
 }

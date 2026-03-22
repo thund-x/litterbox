@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use nix::unistd::Pid;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -9,6 +10,7 @@ fn path_relative_to_lbx_root(relative_path: &str) -> Result<PathBuf> {
     let home_dir = env::home_dir()?;
     let home_path = Path::new(&home_dir);
     let full_path = home_path.join("Litterbox").join(relative_path);
+
     Ok(full_path)
 }
 
@@ -39,22 +41,25 @@ pub fn session_lock_path(lbx_name: &str) -> Result<PathBuf> {
 pub fn daemon_log_file(lbx_name: &str) -> Result<File> {
     let path = path_relative_to_lbx_root(&format!("logs/daemon-{lbx_name}.log"))?;
     let output_dir = path.parent().expect("Path should have parent.");
+
     fs::create_dir_all(output_dir)?;
+
     File::create(&path).context("Could not create daemon log file")
 }
 
-pub fn append_pid_to_session_lockfile(path: &Path, pid: u32) -> Result<()> {
+pub fn append_pid_to_session_lockfile(path: &Path, pid: Pid) -> Result<()> {
     let mut pids = read_pids_from_session_lockfile(path)?;
 
     if !pids.contains(&pid) {
         pids.push(pid);
+
         write_pids_to_session_lockfile(path, &pids)?;
     }
 
     Ok(())
 }
 
-pub fn remove_pid_from_session_lockfile(path: &Path, pid: u32) -> Result<()> {
+pub fn remove_pid_from_session_lockfile(path: &Path, pid: Pid) -> Result<()> {
     let mut pids = read_pids_from_session_lockfile(path)?;
 
     pids.retain(|&p| p != pid);
@@ -63,45 +68,48 @@ pub fn remove_pid_from_session_lockfile(path: &Path, pid: u32) -> Result<()> {
     Ok(())
 }
 
-pub fn write_pids_to_session_lockfile(path: &Path, pids: &[u32]) -> Result<()> {
+pub fn write_pids_to_session_lockfile(path: &Path, pids: &[Pid]) -> Result<()> {
     let content = pids
         .iter()
         .map(|p| p.to_string())
         .collect::<Vec<_>>()
         .join("\n");
+
     write_file(path, &content)
 }
 
-pub fn read_pids_from_session_lockfile(path: &Path) -> Result<Vec<u32>> {
+pub fn read_pids_from_session_lockfile(path: &Path) -> Result<Vec<Pid>> {
     if !path.exists() {
         return Ok(Vec::new());
     }
 
     let content = read_file(path)?;
+
     content
         .lines()
         .filter(|line| !line.trim().is_empty())
-        .map(|line| line.trim().parse::<u32>().map_err(anyhow::Error::from))
+        .map(|line| {
+            line.trim()
+                .parse()
+                .map(Pid::from_raw)
+                .map_err(anyhow::Error::from)
+        })
         .collect()
 }
 
 pub fn cleanup_dead_pids_from_session_lockfile(path: &Path) -> Result<()> {
     use nix::sys::signal::kill;
-    use nix::unistd::Pid;
 
     if !path.exists() {
         return Ok(());
     }
 
     let pids = read_pids_from_session_lockfile(path)?;
-    let alive_pids: Vec<u32> = pids
+    let alive_pids = pids
         .iter()
-        .filter(|&pid| {
-            let pid = Pid::from_raw(*pid as i32);
-            kill(pid, None).is_ok()
-        })
         .copied()
-        .collect();
+        .filter(|&pid| kill(pid, None).is_ok())
+        .collect::<Vec<_>>();
 
     if pids == alive_pids {
         return Ok(());
@@ -113,9 +121,10 @@ pub fn cleanup_dead_pids_from_session_lockfile(path: &Path) -> Result<()> {
 }
 
 pub fn pipewire_socket_path() -> Result<PathBuf> {
-    let xdg_runtime_dir = env::xdg_runtime_dir()?;
-    let path = format!("{xdg_runtime_dir}/pipewire-0");
-    Ok(Path::new(&path).to_path_buf())
+    let mut xdg_runtime_dir = env::xdg_runtime_dir()?;
+    xdg_runtime_dir.push("pipewire-0");
+
+    Ok(xdg_runtime_dir)
 }
 
 pub fn write_file(path: &Path, contents: &str) -> Result<()> {
@@ -143,21 +152,25 @@ pub fn wait_for_sessions_to_finish() -> Result<()> {
     };
 
     if is_empty() {
-        println!("Session already empty, Litterbox finished.");
+        eprintln!("Session already empty, Litterbox finished.");
+
         return Ok(());
     }
 
     let inotify = Inotify::init(InitFlags::empty())?;
     inotify.add_watch(session_lock_path, AddWatchFlags::IN_MODIFY)?;
 
-    println!("Litterbox started, waiting for session to become empty.");
+    eprintln!("Litterbox started, waiting for session to become empty.");
+
     loop {
         let _ = inotify.read_events()?;
+
         if is_empty() {
             break;
         }
     }
-    println!("Session empty, Litterbox finished.");
+
+    eprintln!("Session empty, Litterbox finished.");
 
     Ok(())
 }
@@ -204,10 +217,9 @@ impl Drop for SshSockFile {
 }
 
 pub fn setup_home() -> Result<()> {
-    let home = env::home_dir()?;
-    let marker = format!("{}/.home-built", home);
+    let marker = env::home_dir()?.join(".home-built");
 
-    if Path::new(&marker).exists() {
+    if marker.exists() {
         eprintln!("Home already built; skipping.");
     } else {
         eprintln!("Building home for the first time...");

@@ -14,12 +14,11 @@ pub async fn run(lbx_name: &str, password: &str) -> Result<()> {
         let pid_str =
             std::fs::read_to_string(&daemon_lock).context("Failed to read daemon lock file")?;
 
-        if let Ok(pid) = pid_str.trim().parse::<u32>() {
-            let pid = Pid::from_raw(pid as i32);
-            if kill(pid, None).is_ok() {
-                info!("Daemon already running for {}", lbx_name);
-                return Ok(());
-            }
+        if let Ok(pid) = pid_str.trim().parse().map(Pid::from_raw)
+            && kill(pid, None).is_ok()
+        {
+            info!("Daemon already running for {}", lbx_name);
+            return Ok(());
         }
 
         info!("Stale daemon lock file found, removing");
@@ -56,21 +55,11 @@ pub async fn run(lbx_name: &str, password: &str) -> Result<()> {
 }
 
 pub fn is_running(lbx_name: &str) -> Result<bool> {
-    use std::fs::read_to_string;
-
     let daemon_lock = files::daemon_lock_path(lbx_name)?;
-    let running = daemon_lock.exists() && {
-        if let Ok(pid_str) = read_to_string(&daemon_lock) {
-            if let Ok(pid) = pid_str.trim().parse::<u32>() {
-                let pid = Pid::from_raw(pid as i32);
-                kill(pid, None).is_ok()
-            } else {
-                false
-            }
-        } else {
-            false
-        }
-    };
 
-    Ok(running)
+    std::fs::read_to_string(&daemon_lock)
+        .ok()
+        .and_then(|pid| pid.trim().parse().map(Pid::from_raw).ok())
+        .map(|pid| Ok(kill(pid, None).is_ok()))
+        .unwrap_or(Ok(false))
 }

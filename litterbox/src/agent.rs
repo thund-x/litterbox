@@ -15,7 +15,7 @@ use crate::files::SshSockFile;
 #[derive(Clone)]
 struct AskAgent {
     lbx_name: String,
-    litterbox_path: String,
+    litterbox_path: PathBuf,
     agent_state: Arc<AgentState>,
 }
 
@@ -230,7 +230,7 @@ pub fn prompt_confirmation(request: &str, lbx_name: &str) {
     );
 
     if let Err(e) = run_result {
-        println!("Error running ConfirmationDialog: {:#?}", e);
+        eprintln!("Error running ConfirmationDialog: {:#?}", e);
     }
 
     println!("{user_response}");
