@@ -1,6 +1,8 @@
 use anyhow::Result;
 use clap::Args;
 
+use crate::podman::{build_image, build_litterbox};
+
 /// Build a new Litterbox
 #[derive(Args, Debug)]
 pub struct Command {
@@ -10,6 +12,9 @@ pub struct Command {
 
 impl Command {
     pub fn run(self) -> Result<()> {
+        build_image(&self.name)?;
+        build_litterbox(&self.name)?;
+
         Ok(())
     }
 }

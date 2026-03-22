@@ -10,7 +10,9 @@ pub struct Command {
 }
 
 impl Command {
-    pub fn run(self, keys: Keys) -> Result<()> {
+    pub fn run(self, mut keys: Keys) -> Result<()> {
+        keys.detach(&self.key_name)?;
+
         Ok(())
     }
 }

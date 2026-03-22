@@ -1,10 +1,7 @@
 use anyhow::{Result, bail};
-use clap::{Parser, Subcommand};
+use clap::Parser;
 use inquire_derive::Selectable;
-use log::info;
-use nix::unistd::{Gid, Uid};
-use std::{ffi::OsString, fmt::Display, path::PathBuf, process::Output};
-use tabled::{Table, Tabled};
+use std::{fmt::Display, process::Output};
 
 mod agent;
 mod commands;
@@ -17,32 +14,7 @@ mod podman;
 mod sandbox;
 mod settings;
 
-use crate::{
-    files::{dockerfile_path, write_file},
-    keys::Keys,
-    podman::ContainerDetails,
-};
-
-#[derive(Tabled)]
-struct ContainerTableRow {
-    name: String,
-    container_id: String,
-    container_names: String,
-    image: String,
-    image_id: String,
-}
-
-impl From<&ContainerDetails> for ContainerTableRow {
-    fn from(value: &ContainerDetails) -> Self {
-        Self {
-            name: value.labels.name.clone(),
-            container_id: value.id.chars().take(12).collect(),
-            container_names: value.names.join(","),
-            image: value.image.clone(),
-            image_id: value.image_id.chars().take(12).collect(),
-        }
-    }
-}
+use crate::keys::Keys;
 
 fn extract_stdout(output: &Output) -> Result<&str> {
     if !output.status.success() {
@@ -83,21 +55,6 @@ impl Display for Template {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.name())
     }
-}
-
-fn define_litterbox(lbx_name: &str) -> Result<()> {
-    let dockerfile = dockerfile_path(lbx_name)?;
-
-    if dockerfile.exists() {
-        bail!("Dockerfile already exists at {dockerfile:?}");
-    }
-
-    let template = Template::select("Choose a template:").prompt()?;
-
-    write_file(dockerfile.as_path(), template.contents())?;
-    info!("Default Dockerfile written to {dockerfile:?}");
-
-    Ok(())
 }
 
 fn gen_random_name() -> String {

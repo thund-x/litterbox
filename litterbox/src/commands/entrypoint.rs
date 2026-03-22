@@ -4,6 +4,8 @@ use anyhow::Result;
 use clap::Args;
 use nix::unistd::{Gid, Uid};
 
+use crate::sandbox::entrypoint;
+
 /// Container entrypoint (for internal use)
 #[derive(Args, Debug)]
 pub struct Command {
@@ -12,11 +14,11 @@ pub struct Command {
     root: bool,
 
     /// The UID to drop to if dropping privileges
-    #[arg(long)]
+    #[arg(long, value_parser = |x: &str| x.parse().map(Gid::from_raw))]
     uid: Uid,
 
     /// The GID to drop to if dropping privileges
-    #[arg(long)]
+    #[arg(long, value_parser = |x: &str| x.parse().map(Gid::from_raw))]
     gid: Gid,
 
     /// The command to execute instead of the login shell
@@ -29,6 +31,8 @@ pub struct Command {
 
 impl Command {
     pub fn run(self) -> Result<()> {
+        entrypoint(self.root, self.uid, self.gid, self.command, self.args)?;
+
         Ok(())
     }
 }
