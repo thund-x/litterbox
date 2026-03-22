@@ -14,7 +14,7 @@ pub struct Command {
     root: bool,
 
     /// The UID to drop to if dropping privileges
-    #[arg(long, value_parser = |x: &str| x.parse().map(Gid::from_raw))]
+    #[arg(long, value_parser = |x: &str| x.parse().map(Uid::from_raw))]
     uid: Uid,
 
     /// The GID to drop to if dropping privileges

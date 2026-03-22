@@ -70,6 +70,22 @@ pub struct ContainerLabels {
     pub name: String,
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+// https://github.com/containers/podman/blob/0eeff22607b98f312b655f01a4f29b5da2553330/libpod/define/containerstate.go#L39-L70
+pub enum ContainerState {
+    Created,
+    Initialized,
+    Running,
+    Stopped,
+    Paused,
+    Exited,
+    Removing,
+    Stopping,
+    Unknown,
+}
+
 #[derive(Deserialize, Debug, Clone)]
 pub struct Container {
     #[serde(rename = "Id")]
@@ -86,6 +102,9 @@ pub struct Container {
 
     #[serde(rename = "Labels")]
     pub labels: ContainerLabels,
+
+    #[serde(rename = "State")]
+    pub state: ContainerState,
 }
 
 #[derive(Deserialize, Debug)]
@@ -147,7 +166,11 @@ pub fn get_container(lbx_name: &str) -> Result<Option<Container>> {
 }
 
 pub fn is_container_running(lbx_name: &str) -> Result<bool> {
-    Ok(!dbg!(get_containers_by_name(lbx_name))?.0.is_empty())
+    let containers = get_containers_by_name(lbx_name)?.0;
+
+    Ok(containers
+        .first()
+        .is_some_and(|c| c.state == ContainerState::Running))
 }
 
 pub fn get_image(lbx_name: &str) -> Result<Option<Image>> {
