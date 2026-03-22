@@ -13,6 +13,7 @@ mod podman;
 mod sandbox;
 mod settings;
 mod template;
+mod utils;
 
 use crate::keys::Keys;
 

@@ -7,9 +7,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use strum_macros::{Display, EnumString};
 use tokio::process::Command;
 
-use crate::env::litterbox_binary_path;
 use crate::extract_stdout;
 use crate::files::SshSockFile;
+use crate::{env::litterbox_binary_path, utils::trace_arguments};
 
 #[derive(PartialEq, Eq, Hash, Display, Clone, Copy, EnumString)]
 pub enum UserRequest {
@@ -95,14 +95,16 @@ impl agent::server::Agent for AskAgent {
             return true;
         }
 
-        let output = Command::new(&self.litterbox_path)
-            .args([
-                "confirm",
-                "--request",
-                &request.to_string(),
-                "--lbx-name",
-                &self.lbx_name,
-            ])
+        let mut cmd = Command::new(&self.litterbox_path);
+        cmd.args([
+            "confirm",
+            "--request",
+            &request.to_string(),
+            "--lbx-name",
+            &self.lbx_name,
+        ]);
+        trace_arguments(cmd.as_std());
+        let output = cmd
             .output()
             .await
             .expect("Litterbox should return valid output to itself.");
