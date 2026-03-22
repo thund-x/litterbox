@@ -2,7 +2,7 @@ use crate::keys::Keys;
 use anyhow::Result;
 use clap::Args;
 
-/// List all the keys are being managed
+/// List all the keys that are being managed
 #[derive(Args, Debug)]
 pub struct Command {}
 
