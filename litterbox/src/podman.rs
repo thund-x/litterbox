@@ -332,6 +332,9 @@ pub fn build_litterbox(lbx_name: &str) -> Result<()> {
     cmd.arg("--replace");
     cmd.args(["--entrypoint", "[\"/litterbox\", \"wait\"]"]);
     cmd.args(["--env", &format!("HOME=/home/{LBX_USER}")]);
+    // Allow user to specify RUST_LOG to litterbox internal commands. Useful for
+    // development and for debugging.
+    cmd.args(["--env", "RUST_LOG"]);
     cmd.args([
         "--env",
         &format!("SSH_AUTH_SOCK={}/ssh-agent.sock", rt_dir.to_string_lossy()),
@@ -507,7 +510,7 @@ pub fn enter_litterbox(
     files::append_pid_to_session_lockfile(&session_lock, my_pid)?;
 
     if !is_container_running(lbx_name)? {
-        eprintln!("Container not running yet, starting now...");
+        info!("Container is not running yet; starting now...");
 
         let start_child = Command::new("podman")
             .args(["start", &container_id])
@@ -516,7 +519,7 @@ pub fn enter_litterbox(
 
         wait_for_podman(start_child)?;
     } else {
-        eprintln!("Container already running, just attaching...")
+        debug!("Container is already running; just attaching...")
     }
 
     tokio::runtime::Runtime::new()
@@ -543,7 +546,7 @@ pub fn enter_litterbox(
                 exec_child.arg(workdir.into_os_string());
             }
 
-            // We always start as root but then drop down later if needed
+            // We always start as root but drop permissions later if needed
             exec_child.arg("--user");
             exec_child.arg("root");
 
@@ -569,8 +572,8 @@ pub fn enter_litterbox(
             }
 
             let mut exec_child = exec_child.spawn().context("Failed to run podman command")?;
+            debug!("Entering Litterbox...");
 
-            eprintln!("Waiting for podman");
             tokio::select! {
                 _ = wait_for_podman_async(&mut exec_child) => {}
                 _ = tokio::signal::ctrl_c() => {

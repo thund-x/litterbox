@@ -5,10 +5,9 @@ use landlock::{
 };
 use log::{debug, error, warn};
 use nix::{
-    libc::WNOWAIT,
     sys::{
         prctl::set_child_subreaper,
-        wait::{WaitPidFlag, WaitStatus, wait, waitpid},
+        wait::{WaitPidFlag, WaitStatus, waitpid},
     },
     unistd::{Gid, Pid, Uid, chown, setgid, setuid},
 };
@@ -20,39 +19,29 @@ use std::{
 };
 
 pub fn apply_landlock() -> Result<()> {
+    // We avoid giving full access to the container's entire root directory so
+    // that we can deny access to "internal" files that Litterbox places within
+    // the root directory.
+    let root_dirs = std::fs::read_dir("/")?.filter_map(|entry| {
+        let path = entry.ok()?.path();
+
+        path.is_dir().then_some(path)
+    });
+
     let access_all = AccessFs::from_all(ABI::V6);
-
-    let ruleset = Ruleset::default();
-    let ruleset = ruleset.handle_access(access_all)?;
-
-    // We avoid giving full access to the container's entire root directory so that we can
-    // deny access to "internal" files that Litterbox places within the root directory.
-    let read_dir = std::fs::read_dir("/")?;
-    let paths: Vec<_> = read_dir
-        .filter_map(|e| {
-            let path = e.ok()?.path();
-            if path.is_dir() { Some(path) } else { None }
-        })
-        .collect();
-
-    let ruleset = ruleset.create()?;
-    let ruleset = ruleset.add_rules(path_beneath_rules(paths, access_all))?;
-    let ruleset = ruleset.add_rules(path_beneath_rules(["/"], AccessFs::ReadDir))?;
-    let ruleset = ruleset.add_rules(path_beneath_rules(
-        ["/litterbox", "/prep-home.sh"],
-        AccessFs::Execute | AccessFs::ReadFile,
-    ))?;
+    let ruleset = Ruleset::default()
+        .handle_access(access_all)?
+        .create()?
+        .add_rules(path_beneath_rules(root_dirs, access_all))?
+        .add_rules(path_beneath_rules(["/"], AccessFs::ReadDir))?
+        .add_rules(path_beneath_rules(
+            ["/litterbox", "/prep-home.sh"],
+            AccessFs::Execute | AccessFs::ReadFile,
+        ))?;
 
     match ruleset.restrict_self() {
-        Ok(status) => {
-            eprintln!(
-                "Landlock sandbox applied: {:?}, no_new_privs: {}",
-                status.ruleset, status.no_new_privs
-            );
-        }
-        Err(e) => {
-            eprintln!("Failed to apply Landlock sandbox: {:?}", e);
-        }
+        Ok(status) => debug!("Landlock sandbox applied: {status:?}"),
+        Err(cause) => error!("Failed to apply Landlock sandbox: {cause:?}"),
     }
 
     Ok(())
@@ -83,7 +72,9 @@ pub fn entrypoint(
     if !root {
         setgid(gid)?;
         setuid(uid)?;
-        debug!("Dropped permissions to non-root user");
+        debug!("Dropped from root to {uid}:{gid}");
+    } else {
+        debug!("Will keep root privileges!");
     }
 
     apply_landlock()?;
@@ -93,6 +84,11 @@ pub fn entrypoint(
     cmd.stderr(Stdio::inherit());
     cmd.stdout(Stdio::inherit());
     cmd.stdin(Stdio::inherit());
+    // $RUST_LOG can be passed from `litterbox build` for development and
+    // debugging purposes. We don't want child processes to inherit it.
+    cmd.env_remove("RUST_LOG");
+
+    // Have the shell assume it's a login shell.
     cmd.arg("-l");
 
     if let Some(mut exec_args) = prog_name {
@@ -103,6 +99,7 @@ pub fn entrypoint(
             exec_args.push(arg);
         }
 
+        // Have the shell execute just `exec_args` and then exit.
         cmd.arg("-c");
         cmd.arg(exec_args);
     }
@@ -117,26 +114,31 @@ pub fn entrypoint(
             Ok(WaitStatus::Exited(pid, status)) => {
                 let status = ExitStatus::from_raw(status);
 
-                // TODO: Why aren't log messages being printed?
-                // eprintln!("Child {pid} exited with status: {status:?}");
-                debug!("Child {pid} exited with status: {status:?}");
-
                 if pid == shell_pid {
+                    debug!(
+                        "Login shell {:?} (PID: {pid}) exited: {status}",
+                        cmd.get_program()
+                    );
+
                     if !status.success() {
-                        bail!("Failed to execute program {:?}", cmd.get_program());
-                    } else {
-                        // TODO: How do I handle orphans?
+                        bail!("Failed to execute {:?}", cmd.get_program());
                     }
+                } else {
+                    debug!("Child process {pid} exited: {status}");
                 }
+
+                // TODO: How do I handle orphans?
             }
 
             Ok(WaitStatus::Signaled(pid, signal, _)) => {
-                // eprintln!("Child {pid} was killed with signal {signal}");
-                debug!("Child {pid} was killed with signal {signal}");
-
                 if pid == shell_pid {
-                    warn!("Login shell was killed with signal {signal}");
+                    warn!(
+                        "Login shell {:?} (PID: {pid}) was killed with signal {signal}",
+                        cmd.get_program()
+                    );
                 } else {
+                    debug!("Child process {pid} was killed with signal {signal}");
+
                     // TODO: How do I handle orphans?
                 }
             }
@@ -148,14 +150,11 @@ pub fn entrypoint(
                 | WaitStatus::Stopped(..)
                 | WaitStatus::StillAlive),
             ) => {
-                // eprintln!("Child signaled with unhandled status: {status:?}");
                 warn!("Child signaled with unhandled status: {status:?}");
             }
 
             Err(nix::errno::Errno::ECHILD) => {
-                // eprintln!("Received error ECHILD");
-                debug!("Received error ECHILD");
-                // No calling processes are waiting anymore
+                debug!("Received ECHILD: No remaining unwaited-for child processes");
                 break;
             }
 

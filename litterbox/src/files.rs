@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use log::{debug, info};
 use nix::unistd::Pid;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
@@ -220,18 +221,16 @@ pub fn setup_home() -> Result<()> {
     let marker = env::home_dir()?.join(".home-built");
 
     if marker.exists() {
-        eprintln!("Home already built; skipping.");
+        debug!("Home already built; skipping.");
     } else {
-        eprintln!("Building home for the first time...");
+        info!("Building home for the first time...");
 
-        if Path::new("/prep-home.sh").exists() {
-            Command::new("/prep-home.sh")
-                .status()
-                .context("Running /prep-home.sh")?;
-        }
+        Command::new("/prep-home.sh")
+            .status()
+            .context("Running /prep-home.sh")?;
 
-        File::create(&marker).context("Building marker")?;
-        eprintln!("Home built!");
+        File::create(&marker).context("Creating .home-built marker")?;
+        info!("Home built!");
     }
 
     Ok(())
