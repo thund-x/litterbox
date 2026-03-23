@@ -3,13 +3,14 @@ use anyhow::{Context, Result, bail};
 use landlock::{
     ABI, Access, AccessFs, Ruleset, RulesetAttr, RulesetCreatedAttr, path_beneath_rules,
 };
-use log::{debug, error, warn};
+use log::{debug, error, info, warn};
 use nix::{
     sys::{
         prctl::set_child_subreaper,
+        signal::{Signal, killpg},
         wait::{WaitPidFlag, WaitStatus, waitpid},
     },
-    unistd::{Gid, Pid, Uid, chown, setgid, setuid},
+    unistd::{Gid, Pid, Uid, chown, getpgrp, setgid, setuid},
 };
 use std::{
     ffi::OsString,
@@ -17,6 +18,9 @@ use std::{
     path::Path,
     process::{Command, ExitStatus, Stdio},
 };
+
+const LOGIN_SHELL_FINISHED_MSG: &str =
+    "Login shell has finished, but there are processes running in the background";
 
 pub fn apply_landlock() -> Result<()> {
     // We avoid giving full access to the container's entire root directory so
@@ -53,6 +57,7 @@ pub fn entrypoint(
     gid: Gid,
     prog_name: Option<OsString>,
     args: Vec<OsString>,
+    wait: Option<bool>,
 ) -> Result<()> {
     let run0_path = Path::new("/usr/bin/run0");
     if !run0_path.exists() {
@@ -106,11 +111,12 @@ pub fn entrypoint(
 
     let shell_child = cmd.spawn().context("Failed to launch shell")?;
     let shell_pid = Pid::from_raw(shell_child.id() as i32);
+    let mut waitpid_flags = WaitPidFlag::empty();
 
     set_child_subreaper(true).context("failed to make process child subreaper")?;
 
     loop {
-        match waitpid(None, None) {
+        match waitpid(None, Some(waitpid_flags)) {
             Ok(WaitStatus::Exited(pid, status)) => {
                 let status = ExitStatus::from_raw(status);
 
@@ -123,11 +129,12 @@ pub fn entrypoint(
                     if !status.success() {
                         bail!("Failed to execute {:?}", cmd.get_program());
                     }
+
+                    // Activate the `WaitStatus::StillAlive` arm.
+                    waitpid_flags |= WaitPidFlag::WNOHANG;
                 } else {
                     debug!("Child process {pid} exited: {status}");
                 }
-
-                // TODO: How do I handle orphans?
             }
 
             Ok(WaitStatus::Signaled(pid, signal, _)) => {
@@ -136,10 +143,41 @@ pub fn entrypoint(
                         "Login shell {:?} (PID: {pid}) was killed with signal {signal}",
                         cmd.get_program()
                     );
+
+                    // Activate the `WaitStatus::StillAlive` arm.
+                    waitpid_flags |= WaitPidFlag::WNOHANG;
                 } else {
                     debug!("Child process {pid} was killed with signal {signal}");
+                }
+            }
 
-                    // TODO: How do I handle orphans?
+            Ok(WaitStatus::StillAlive) => {
+                // Disable this arm.
+                waitpid_flags -= WaitPidFlag::WNOHANG;
+
+                match wait {
+                    Some(true) => {
+                        info!("{LOGIN_SHELL_FINISHED_MSG}. Press CTRL+C to stop them.");
+                    }
+
+                    Some(false) => {
+                        info!("{LOGIN_SHELL_FINISHED_MSG}. Exiting anyway...");
+                        // Kill all descendants of this process forcefully.
+                        //
+                        // FIXME: Should they be forcefully killed? What about a graceful exit?
+                        let _ = killpg(getpgrp(), Some(Signal::SIGKILL));
+
+                        break;
+                    }
+
+                    None => {
+                        info!("{LOGIN_SHELL_FINISHED_MSG}. Continuing in the background...");
+
+                        // TODO: Daemonize
+                        //
+                        // NOTE: What about the actual init process `litterbox
+                        // wait` command? Do I merge them together?
+                    }
                 }
             }
 
@@ -147,8 +185,7 @@ pub fn entrypoint(
                 status @ (WaitStatus::PtraceEvent(..)
                 | WaitStatus::PtraceSyscall(..)
                 | WaitStatus::Continued(..)
-                | WaitStatus::Stopped(..)
-                | WaitStatus::StillAlive),
+                | WaitStatus::Stopped(..)),
             ) => {
                 warn!("Child signaled with unhandled status: {status:?}");
             }

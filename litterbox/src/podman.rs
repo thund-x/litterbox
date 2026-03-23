@@ -470,6 +470,7 @@ pub fn enter_litterbox(
     command: Option<OsString>,
     command_args: Vec<OsString>,
     root: bool,
+    wait: Option<bool>,
 ) -> Result<()> {
     let container =
         get_container(lbx_name)?.ok_or_else(|| anyhow!("No container found for '{lbx_name}'"))?;
@@ -563,6 +564,10 @@ pub fn enter_litterbox(
             // The entrypoint is responsible for dropping root if needed
             if root {
                 exec_child.arg("--root");
+            }
+
+            if let Some(wait) = wait {
+                exec_child.args(["--wait", &wait.to_string()]);
             }
 
             if let Some(command) = command {

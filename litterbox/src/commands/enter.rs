@@ -31,6 +31,13 @@ pub struct Command {
     /// The command to execute instead of the login shell
     command: Option<OsString>,
 
+    /// When set to `true`, it will wait for background processes to finish
+    /// in the foreground. When set to `false`, it will send SIGKILL to all
+    /// background processes. If it's not specified, litterbox will wait for
+    /// background processes in the background.
+    #[arg(long)]
+    wait: Option<bool>,
+
     /// Additional arguments passed to the command
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     args: Vec<OsString>,
@@ -46,6 +53,7 @@ impl Command {
             self.command,
             self.args,
             self.root,
+            self.wait,
         )?;
 
         eprintln!("Exited Litterbox");
