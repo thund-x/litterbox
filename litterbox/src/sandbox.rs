@@ -1,18 +1,22 @@
-use anyhow::{Context, Result};
+use crate::{env, files::setup_home};
+use anyhow::{Context, Result, bail};
 use landlock::{
     ABI, Access, AccessFs, Ruleset, RulesetAttr, RulesetCreatedAttr, path_beneath_rules,
 };
-use nix::unistd::{Gid, Uid, chown, setgid, setuid};
+use log::{debug, error, warn};
+use nix::{
+    libc::WNOWAIT,
+    sys::{
+        prctl::set_child_subreaper,
+        wait::{WaitPidFlag, WaitStatus, wait, waitpid},
+    },
+    unistd::{Gid, Pid, Uid, chown, setgid, setuid},
+};
 use std::{
     ffi::OsString,
-    os::unix::{fs::symlink, process::CommandExt},
+    os::unix::{fs::symlink, prelude::ExitStatusExt},
     path::Path,
-    process::Command,
-};
-
-use crate::{
-    env::{self, xdg_runtime_dir},
-    files::setup_home,
+    process::{Command, ExitStatus, Stdio},
 };
 
 pub fn apply_landlock() -> Result<()> {
@@ -58,7 +62,7 @@ pub fn entrypoint(
     root: bool,
     uid: Uid,
     gid: Gid,
-    command: Option<OsString>,
+    prog_name: Option<OsString>,
     args: Vec<OsString>,
 ) -> Result<()> {
     let run0_path = Path::new("/usr/bin/run0");
@@ -71,7 +75,7 @@ pub fn entrypoint(
         symlink("/litterbox", sudo_path)?;
     }
 
-    let xdg_runtime_dir = xdg_runtime_dir().context("$XDG_RUNTIME_DIR is not set")?;
+    let xdg_runtime_dir = env::xdg_runtime_dir().context("$XDG_RUNTIME_DIR is not set")?;
 
     chown(&xdg_runtime_dir, Some(uid), Some(gid))
         .context("Failed to set owner of $XDG_RUNTIME_DIR")?;
@@ -79,34 +83,85 @@ pub fn entrypoint(
     if !root {
         setgid(gid)?;
         setuid(uid)?;
-        eprintln!("Dropped permissions to non-root user");
+        debug!("Dropped permissions to non-root user");
     }
 
     apply_landlock()?;
     setup_home()?;
 
     let mut cmd = Command::new(&env::shell()?);
+    cmd.stderr(Stdio::inherit());
+    cmd.stdout(Stdio::inherit());
+    cmd.stdin(Stdio::inherit());
     cmd.arg("-l");
 
-    if let Some(mut command) = command {
-        // We can't use Command::args for "command" because shells
-        // generally expect a single argument for the "-c" option
+    if let Some(mut exec_args) = prog_name {
+        // We can't use Command::args for "command" because shells generally
+        // expect a single argument for the "-c" option.
         for arg in args {
-            command.push(" ");
-            command.push(arg);
+            exec_args.push(" ");
+            exec_args.push(arg);
         }
 
         cmd.arg("-c");
-        cmd.arg(command);
+        cmd.arg(exec_args);
     }
 
-    // On success it never returns
-    let cause = cmd.exec();
+    let shell_child = cmd.spawn().context("Failed to launch shell")?;
+    let shell_pid = Pid::from_raw(shell_child.id() as i32);
 
-    println!(
-        "Failed to execute program '{}': {cause}",
-        cmd.get_program().to_string_lossy()
-    );
+    set_child_subreaper(true).context("failed to make process child subreaper")?;
+
+    loop {
+        match waitpid(None, None) {
+            Ok(WaitStatus::Exited(pid, status)) => {
+                let status = ExitStatus::from_raw(status);
+
+                // TODO: Why aren't log messages being printed?
+                // eprintln!("Child {pid} exited with status: {status:?}");
+                debug!("Child {pid} exited with status: {status:?}");
+
+                if pid == shell_pid {
+                    if !status.success() {
+                        bail!("Failed to execute program {:?}", cmd.get_program());
+                    } else {
+                        // TODO: How do I handle orphans?
+                    }
+                }
+            }
+
+            Ok(WaitStatus::Signaled(pid, signal, _)) => {
+                // eprintln!("Child {pid} was killed with signal {signal}");
+                debug!("Child {pid} was killed with signal {signal}");
+
+                if pid == shell_pid {
+                    warn!("Login shell was killed with signal {signal}");
+                } else {
+                    // TODO: How do I handle orphans?
+                }
+            }
+
+            Ok(
+                status @ (WaitStatus::PtraceEvent(..)
+                | WaitStatus::PtraceSyscall(..)
+                | WaitStatus::Continued(..)
+                | WaitStatus::Stopped(..)
+                | WaitStatus::StillAlive),
+            ) => {
+                // eprintln!("Child signaled with unhandled status: {status:?}");
+                warn!("Child signaled with unhandled status: {status:?}");
+            }
+
+            Err(nix::errno::Errno::ECHILD) => {
+                // eprintln!("Received error ECHILD");
+                debug!("Received error ECHILD");
+                // No calling processes are waiting anymore
+                break;
+            }
+
+            Err(cause) => bail!(cause),
+        }
+    }
 
     Ok(())
 }
