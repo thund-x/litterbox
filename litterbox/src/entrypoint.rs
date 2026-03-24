@@ -213,13 +213,13 @@ pub fn run_entrypoint(uid: Uid, gid: Gid, opts: CommonEntrypointOptions) -> Resu
         .context("Failed to set owner of $XDG_RUNTIME_DIR")?;
 
     if !opts.root {
+        for su_bin in SU_BINARIES {
+            let _ = symlink("/litterbox", format!("/usr/bin/{su_bin}"));
+        }
+
         setgid(gid)?;
         setuid(uid)?;
         debug!("Dropped from root to {uid}:{gid}");
-
-        for su_bin in SU_BINARIES {
-            symlink("/litterbox", format!("/usr/bin/{su_bin}"))?;
-        }
     } else {
         debug!("Will keep root privileges!");
     }

@@ -13,12 +13,11 @@ use std::{
 };
 
 use crate::{
-    env, extract_stdout,
+    env,
     files::{self, SshSockFile},
-    generate_name,
     keys::Keys,
     settings::LitterboxSettings,
-    utils::trace_arguments,
+    utils::{extract_stdout, generate_name, trace_arguments},
 };
 use crate::{
     files::{dockerfile_path, write_file},
