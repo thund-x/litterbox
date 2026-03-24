@@ -41,7 +41,6 @@ fn main() -> anyhow::Result<()> {
 
     env_logger::init();
 
-    // NOTE: `$0 entrypoint` must run in single-threaded mode, otherwise UB will
-    // occur.
-    args.command.run()
+    // SAFETY: The function is called in a single-threaded process.
+    unsafe { args.command.run() }
 }

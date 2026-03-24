@@ -1,8 +1,20 @@
-use anyhow::Result;
+use crate::entrypoint::CommonEntrypointOptions;
+use crate::{env, files, sandbox, utils::SU_BINARIES};
+use anyhow::{Context as _, Result, bail};
 use clap::Args;
-use nix::unistd::{Gid, Uid};
-
-use crate::entrypoint::{CommonEntrypointOptions, run_entrypoint};
+use log::{debug, info, warn};
+use nix::{
+    sys::{
+        prctl::set_child_subreaper,
+        signal::{Signal, killpg},
+        wait::{WaitPidFlag, WaitStatus, waitpid},
+    },
+    unistd::{Gid, Pid, Uid, chown, getpgrp, setgid, setuid},
+};
+use std::{
+    os::unix::{fs::symlink, prelude::ExitStatusExt},
+    process::{ExitStatus, Stdio},
+};
 
 /// Container entrypoint (for internal use)
 #[derive(Args, Debug)]
@@ -20,8 +32,159 @@ pub struct Command {
 }
 
 impl Command {
-    pub fn run(self) -> Result<()> {
-        // SAFETY: run_entrypoint runs in a single-threaded process.
-        unsafe { run_entrypoint(self.uid, self.gid, self.opts) }
+    /// Runs the entrypoint of a container.
+    ///
+    /// # Safety
+    ///
+    /// - This function may fork the current process for daemonization. Ensure you
+    ///   call this function in a single-threaded process. For more information see
+    ///   [`pre_exec`]'s note on safety and [nix-rust/nix#2663].
+    ///
+    /// [nix-rust/nix#2663]: https://github.com/nix-rust/nix/issues/2663
+    /// [`pre_exec`]: std::os::unix::process::CommandExt::pre_exec
+    pub unsafe fn run(self) -> Result<()> {
+        use std::process::Command;
+
+        let xdg_runtime_dir = env::xdg_runtime_dir().context("$XDG_RUNTIME_DIR is not set")?;
+        chown(&xdg_runtime_dir, Some(self.uid), Some(self.gid))
+            .context("Failed to set owner of $XDG_RUNTIME_DIR")?;
+
+        if !self.opts.root {
+            for su_bin in SU_BINARIES {
+                let _ = symlink("/litterbox", format!("/usr/bin/{su_bin}"));
+            }
+
+            setgid(self.gid)?;
+            setuid(self.uid)?;
+            debug!("Dropped from root to {}:{}", self.uid, self.gid);
+        } else {
+            debug!("Will keep root privileges!");
+        }
+
+        sandbox::apply_landlock()?;
+        files::setup_home()?;
+
+        let mut cmd = Command::new(&env::shell()?);
+        cmd.stderr(Stdio::inherit());
+        cmd.stdout(Stdio::inherit());
+        cmd.stdin(Stdio::inherit());
+        // $RUST_LOG can be passed from `litterbox build` for development and
+        // debugging purposes. We don't want child processes to inherit it.
+        cmd.env_remove("RUST_LOG");
+
+        // Have the shell assume it's a login shell.
+        cmd.arg("-l");
+
+        if let Some(mut exec_args) = self.opts.command {
+            // We can't use Command::args for "command" because shells generally
+            // expect a single argument for the "-c" option.
+            for arg in self.opts.args {
+                exec_args.push(" ");
+                exec_args.push(arg);
+            }
+
+            // Have the shell execute just `exec_args` and then exit.
+            cmd.arg("-c");
+            cmd.arg(exec_args);
+        }
+
+        let shell_child = cmd.spawn().context("Failed to launch shell")?;
+        let shell_pid = Pid::from_raw(shell_child.id() as i32);
+        let mut waitpid_flags = WaitPidFlag::empty();
+
+        set_child_subreaper(true).context("failed to make process child subreaper")?;
+
+        loop {
+            match waitpid(None, Some(waitpid_flags)) {
+                Ok(WaitStatus::Exited(pid, status)) => {
+                    let status = ExitStatus::from_raw(status);
+
+                    if pid == shell_pid {
+                        debug!(
+                            "Login shell {:?} (PID: {pid}) exited: {status}",
+                            cmd.get_program()
+                        );
+
+                        if !status.success() {
+                            bail!("Failed to execute {:?}", cmd.get_program());
+                        }
+
+                        // Activate the `WaitStatus::StillAlive` arm.
+                        waitpid_flags |= WaitPidFlag::WNOHANG;
+                    } else {
+                        debug!("Child process {pid} exited: {status}");
+                    }
+                }
+
+                Ok(WaitStatus::Signaled(pid, signal, _)) => {
+                    if pid == shell_pid {
+                        warn!(
+                            "Login shell {:?} (PID: {pid}) was killed with signal {signal}",
+                            cmd.get_program()
+                        );
+
+                        // Activate the `WaitStatus::StillAlive` arm.
+                        waitpid_flags |= WaitPidFlag::WNOHANG;
+                    } else {
+                        debug!("Child process {pid} was killed with signal {signal}");
+                    }
+                }
+
+                Ok(WaitStatus::StillAlive) => {
+                    const LOGIN_SHELL_FINISHED_MSG: &str = "Login shell has finished, but there are processes running in the background";
+
+                    // Disable this arm.
+                    waitpid_flags -= WaitPidFlag::WNOHANG;
+
+                    match self.opts.wait {
+                        Some(true) => {
+                            info!("{LOGIN_SHELL_FINISHED_MSG}. Press CTRL+C to stop them.");
+                        }
+
+                        Some(false) => {
+                            info!("{LOGIN_SHELL_FINISHED_MSG}. Exiting anyway...");
+                            // Kill all descendants of this process forcefully.
+                            //
+                            // FIXME: Should they be forcefully killed? What about a graceful exit?
+                            let _ = killpg(getpgrp(), Some(Signal::SIGKILL));
+
+                            break;
+                        }
+
+                        None => {
+                            info!("{LOGIN_SHELL_FINISHED_MSG}. Continuing in the background...");
+
+                            // SAFETY: The caller must ensure this function is called from a single-threaded process.
+                            #[expect(
+                                unused_unsafe,
+                                reason = "https://github.com/nix-rust/nix/issues/2663 seeks to mark daemon as unsafe"
+                            )]
+                            unsafe {
+                                nix::unistd::daemon(true, true)
+                                    .context("Failed to daemonize itself")?;
+                            }
+                        }
+                    }
+                }
+
+                Ok(
+                    status @ (WaitStatus::PtraceEvent(..)
+                    | WaitStatus::PtraceSyscall(..)
+                    | WaitStatus::Continued(..)
+                    | WaitStatus::Stopped(..)),
+                ) => {
+                    warn!("Child signaled with unhandled status: {status:?}");
+                }
+
+                Err(nix::errno::Errno::ECHILD) => {
+                    debug!("Received ECHILD: No remaining unwaited-for child processes");
+                    break;
+                }
+
+                Err(cause) => bail!(cause),
+            }
+        }
+
+        Ok(())
     }
 }
