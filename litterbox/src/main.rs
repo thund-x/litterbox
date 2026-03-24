@@ -16,7 +16,7 @@ mod settings;
 mod template;
 mod utils;
 
-use crate::keys::Keys;
+use crate::{keys::Keys, utils::SU_BINARIES};
 
 pub fn extract_stdout(output: &Output) -> Result<&str> {
     if !output.status.success() {
@@ -44,18 +44,20 @@ struct Args {
 }
 
 fn main() -> Result<()> {
-    env_logger::init();
+    let arg0 = std::env::args().next();
 
-    let argv_0 = std::env::args().next();
-    if matches!(argv_0.as_deref(), Some("run0" | "sudo")) {
+    if let Some(arg0) = arg0.as_deref()
+        && SU_BINARIES.contains(&arg0)
+    {
         eprintln!(
-            "run0/sudo is not supported inside this session. Use 'litterbox enter --root <name>' to enter as root."
+            "{arg0:?} is not supported inside this session. Use 'litterbox enter --root NAME' to enter as root."
         );
 
-        return Ok(());
+        std::process::exit(1);
     }
 
     let args = Args::parse();
 
+    env_logger::init();
     args.command.run()
 }

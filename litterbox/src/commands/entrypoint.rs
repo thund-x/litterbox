@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::Args;
 use nix::unistd::{Gid, Uid};
 
-use crate::{entrypoint::CommonEntrypointOptions, sandbox::entrypoint};
+use crate::entrypoint::{CommonEntrypointOptions, run_entrypoint};
 
 /// Container entrypoint (for internal use)
 #[derive(Args, Debug)]
@@ -21,6 +21,6 @@ pub struct Command {
 
 impl Command {
     pub fn run(self) -> Result<()> {
-        entrypoint(self.uid, self.gid, self.opts)
+        run_entrypoint(self.uid, self.gid, self.opts)
     }
 }

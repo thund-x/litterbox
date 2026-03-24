@@ -1,21 +1,29 @@
-use std::{
-    ffi::OsString,
-    fmt::Display,
-    path::PathBuf,
-    process::Command,
-    str::{FromStr, ParseBoolError},
-};
-
-use anyhow::{Context as _, Result, anyhow};
-use clap::Args;
-use log::{debug, info, warn};
-use nix::unistd::{Pid, getgid, getuid};
-
 use crate::{
-    daemon, files,
+    daemon, env, files,
     podman::{
         get_container, is_container_running, start_daemon, wait_for_podman, wait_for_podman_async,
     },
+    sandbox,
+    utils::SU_BINARIES,
+};
+use anyhow::{Context as _, Result, anyhow, bail};
+use clap::Args;
+use log::{debug, info, warn};
+use nix::{
+    sys::{
+        prctl::set_child_subreaper,
+        signal::{Signal, killpg},
+        wait::{WaitPidFlag, WaitStatus, waitpid},
+    },
+    unistd::{Gid, Pid, Uid, chown, getgid, getpgrp, getuid, setgid, setuid},
+};
+use std::{
+    ffi::OsString,
+    fmt::Display,
+    os::unix::{fs::symlink, prelude::ExitStatusExt},
+    path::PathBuf,
+    process::{Command, ExitStatus, Stdio},
+    str::{FromStr, ParseBoolError},
 };
 
 #[derive(Clone, Debug, Copy)]
@@ -194,6 +202,147 @@ async fn container_exec_entrypoint(
     }
 
     debug!("Exited Litterbox");
+
+    Ok(())
+}
+
+pub fn run_entrypoint(uid: Uid, gid: Gid, opts: CommonEntrypointOptions) -> Result<()> {
+    let xdg_runtime_dir = env::xdg_runtime_dir().context("$XDG_RUNTIME_DIR is not set")?;
+
+    chown(&xdg_runtime_dir, Some(uid), Some(gid))
+        .context("Failed to set owner of $XDG_RUNTIME_DIR")?;
+
+    if !opts.root {
+        setgid(gid)?;
+        setuid(uid)?;
+        debug!("Dropped from root to {uid}:{gid}");
+
+        for su_bin in SU_BINARIES {
+            symlink("/litterbox", format!("/usr/bin/{su_bin}"))?;
+        }
+    } else {
+        debug!("Will keep root privileges!");
+    }
+
+    sandbox::apply_landlock()?;
+    files::setup_home()?;
+
+    let mut cmd = Command::new(&env::shell()?);
+    cmd.stderr(Stdio::inherit());
+    cmd.stdout(Stdio::inherit());
+    cmd.stdin(Stdio::inherit());
+    // $RUST_LOG can be passed from `litterbox build` for development and
+    // debugging purposes. We don't want child processes to inherit it.
+    cmd.env_remove("RUST_LOG");
+
+    // Have the shell assume it's a login shell.
+    cmd.arg("-l");
+
+    if let Some(mut exec_args) = opts.command {
+        // We can't use Command::args for "command" because shells generally
+        // expect a single argument for the "-c" option.
+        for arg in opts.args {
+            exec_args.push(" ");
+            exec_args.push(arg);
+        }
+
+        // Have the shell execute just `exec_args` and then exit.
+        cmd.arg("-c");
+        cmd.arg(exec_args);
+    }
+
+    let shell_child = cmd.spawn().context("Failed to launch shell")?;
+    let shell_pid = Pid::from_raw(shell_child.id() as i32);
+    let mut waitpid_flags = WaitPidFlag::empty();
+
+    set_child_subreaper(true).context("failed to make process child subreaper")?;
+
+    loop {
+        match waitpid(None, Some(waitpid_flags)) {
+            Ok(WaitStatus::Exited(pid, status)) => {
+                let status = ExitStatus::from_raw(status);
+
+                if pid == shell_pid {
+                    debug!(
+                        "Login shell {:?} (PID: {pid}) exited: {status}",
+                        cmd.get_program()
+                    );
+
+                    if !status.success() {
+                        bail!("Failed to execute {:?}", cmd.get_program());
+                    }
+
+                    // Activate the `WaitStatus::StillAlive` arm.
+                    waitpid_flags |= WaitPidFlag::WNOHANG;
+                } else {
+                    debug!("Child process {pid} exited: {status}");
+                }
+            }
+
+            Ok(WaitStatus::Signaled(pid, signal, _)) => {
+                if pid == shell_pid {
+                    warn!(
+                        "Login shell {:?} (PID: {pid}) was killed with signal {signal}",
+                        cmd.get_program()
+                    );
+
+                    // Activate the `WaitStatus::StillAlive` arm.
+                    waitpid_flags |= WaitPidFlag::WNOHANG;
+                } else {
+                    debug!("Child process {pid} was killed with signal {signal}");
+                }
+            }
+
+            Ok(WaitStatus::StillAlive) => {
+                const LOGIN_SHELL_FINISHED_MSG: &str =
+                    "Login shell has finished, but there are processes running in the background";
+
+                // Disable this arm.
+                waitpid_flags -= WaitPidFlag::WNOHANG;
+
+                match opts.wait {
+                    Some(true) => {
+                        info!("{LOGIN_SHELL_FINISHED_MSG}. Press CTRL+C to stop them.");
+                    }
+
+                    Some(false) => {
+                        info!("{LOGIN_SHELL_FINISHED_MSG}. Exiting anyway...");
+                        // Kill all descendants of this process forcefully.
+                        //
+                        // FIXME: Should they be forcefully killed? What about a graceful exit?
+                        let _ = killpg(getpgrp(), Some(Signal::SIGKILL));
+
+                        break;
+                    }
+
+                    None => {
+                        info!("{LOGIN_SHELL_FINISHED_MSG}. Continuing in the background...");
+
+                        // TODO: Daemonize
+                        //
+                        // NOTE: What about the actual init process `litterbox
+                        // wait` command? Do I merge them together?
+                    }
+                }
+            }
+
+            Ok(
+                status @ (WaitStatus::PtraceEvent(..)
+                | WaitStatus::PtraceSyscall(..)
+                | WaitStatus::Continued(..)
+                | WaitStatus::Stopped(..)),
+            ) => {
+                warn!("Child signaled with unhandled status: {status:?}");
+            }
+
+            Err(nix::errno::Errno::ECHILD) => {
+                debug!("Received ECHILD: No remaining unwaited-for child processes");
+                break;
+            }
+
+            Err(cause) => bail!(cause),
+        }
+    }
 
     Ok(())
 }

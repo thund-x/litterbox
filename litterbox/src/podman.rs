@@ -465,17 +465,19 @@ pub fn build_litterbox(lbx_name: &str) -> Result<()> {
 pub fn start_daemon(lbx_name: &str) -> Result<(), anyhow::Error> {
     let keys = Keys::load()?;
     let password = keys.password_if_needed(lbx_name)?;
-    let log_file = files::daemon_log_file(lbx_name)?;
-    let log_file_clone = log_file.try_clone()?;
+    let log_file_out = files::daemon_log_file(lbx_name)?;
+    let log_file_err = log_file_out.try_clone()?;
     let mut cmd = Command::new(env::litterbox_binary_path());
+
     cmd.args(["daemon", lbx_name]);
     cmd.stdin(Stdio::piped());
-    cmd.stdout(Stdio::from(log_file));
-    cmd.stderr(Stdio::from(log_file_clone));
-    let mut daemon_child = cmd.spawn().context("Failed to run Litterbox daemon")?;
+    cmd.stdout(Stdio::from(log_file_out));
+    cmd.stderr(Stdio::from(log_file_err));
+
+    let mut child = cmd.spawn().context("Failed to run Litterbox daemon")?;
 
     if let Some(pwd) = password
-        && let Some(mut stdin) = daemon_child.stdin.take()
+        && let Some(mut stdin) = child.stdin.take()
     {
         use std::io::Write;
 
