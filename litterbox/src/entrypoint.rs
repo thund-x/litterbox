@@ -6,6 +6,7 @@ use std::{
     fmt::Display,
     str::{FromStr, ParseBoolError},
 };
+use strum_macros::EnumString;
 
 #[derive(Clone, Debug, Copy)]
 pub struct Tty(pub bool);
@@ -49,12 +50,14 @@ pub struct CommonEntrypointOptions {
     #[arg(long, default_value_t = false)]
     pub root: bool,
 
-    /// When set to `true`, it will wait for background processes to finish
-    /// in the foreground. When set to `false`, it will send SIGKILL to all
-    /// background processes. If it's not specified, litterbox will wait for
-    /// background processes in the background.
-    #[arg(long)]
-    pub wait: Option<bool>,
+    /// Set to "foreground" to wait for background processes to finish
+    ///
+    /// Set to "background" for background processes to continue in the
+    /// background
+    ///
+    /// Set to "kill" to end all background processes
+    #[arg(long, default_value_t = Default::default())]
+    pub wait: WaitBehaviour,
 
     /// The command to execute with the login shell.
     pub command: Option<OsString>,
@@ -62,4 +65,16 @@ pub struct CommonEntrypointOptions {
     /// Additional arguments to pass to COMMAND.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub args: Vec<OsString>,
+}
+
+#[derive(Clone, Copy, Debug, Default, EnumString, strum_macros::Display)]
+#[strum(serialize_all = "snake_case")]
+pub enum WaitBehaviour {
+    /// Wait for orphaned processes to exit.
+    #[default]
+    Foreground,
+    /// Send orphaned processes to `litterbox wait`, ending current session.
+    Background,
+    /// Kill orphaned processes with `SIGTERM` and after a while `SIGKILL`.
+    Kill,
 }

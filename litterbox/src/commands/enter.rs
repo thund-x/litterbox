@@ -126,15 +126,13 @@ async fn container_exec_entrypoint(
         &getuid().to_string(),
         "--gid",
         &getgid().to_string(),
+        "--wait",
+        &opts.wait.to_string(),
     ]);
 
     // The entrypoint is responsible for dropping root if needed
     if opts.root {
         exec_child.arg("--root");
-    }
-
-    if let Some(wait) = opts.wait {
-        exec_child.args(["--wait", &wait.to_string()]);
     }
 
     if let Some(command) = opts.command {

@@ -1,4 +1,4 @@
-use crate::entrypoint::CommonEntrypointOptions;
+use crate::entrypoint::{CommonEntrypointOptions, WaitBehaviour};
 use crate::{env, files, sandbox, utils::SU_BINARIES};
 use anyhow::{Context as _, Result, bail};
 use clap::Args;
@@ -125,26 +125,26 @@ impl Command {
                     waitpid_flags -= WaitPidFlag::WNOHANG;
 
                     match self.opts.wait {
-                        Some(true) => {
+                        WaitBehaviour::Foreground => {
                             // The default SIGINT behavior is to terminate the
                             // process.
                             info!("Press CTRL+C to stop orphaned processes.");
                         }
 
-                        Some(false) => {
+                        WaitBehaviour::Background => {
+                            // Exit just this process to pass its descendants to
+                            // the next child subreaper, `litterbox wait` (the entrypoint).
+                            info!("Continuing orphaned processes in the background...");
+
+                            break;
+                        }
+
+                        WaitBehaviour::Kill => {
                             // Explicitly kill the process and its children. Pid
                             // of 0 wouldn't work because orphaned processes
                             // have different group IDs.
                             kill(Pid::from_raw(-1), Signal::SIGKILL)
                                 .context("Kill all child processes")?;
-
-                            break;
-                        }
-
-                        None => {
-                            // Exit just this process to pass its descendants to
-                            // the next child subreaper, `litterbox wait` (the entrypoint).
-                            info!("Continuing orphaned processes in the background...");
 
                             break;
                         }
