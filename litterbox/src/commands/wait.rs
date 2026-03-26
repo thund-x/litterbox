@@ -41,6 +41,7 @@ impl Command {
 
         debug!("Waiting on unwaited-for child processes");
 
+        // `litterbox entrypoint` sends them over here.
         loop {
             match waitpid(None, None) {
                 Ok(WaitStatus::Exited(pid, status)) => {
@@ -57,6 +58,7 @@ impl Command {
 
                 Err(nix::errno::Errno::ECHILD) => {
                     debug!("Received ECHILD: No remaining unwaited-for child processes");
+
                     break;
                 }
 
