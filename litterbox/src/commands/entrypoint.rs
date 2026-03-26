@@ -14,6 +14,8 @@ use nix::{
 use std::{
     os::unix::{fs::symlink, prelude::ExitStatusExt},
     process::{ExitStatus, Stdio},
+    sync::mpsc::RecvTimeoutError,
+    time::Duration,
 };
 
 /// Container entrypoint (for internal use)
@@ -124,17 +126,19 @@ impl Command {
                     // Disable this arm.
                     waitpid_flags -= WaitPidFlag::WNOHANG;
 
+                    debug!("Wait behavior has been set to \"{}\"", self.opts.wait);
+
                     match self.opts.wait {
                         WaitBehaviour::Foreground => {
                             // The default SIGINT behavior is to terminate the
                             // process.
-                            info!("Press CTRL+C to stop orphaned processes.");
+                            info!("Press CTRL+C to exit.");
                         }
 
                         WaitBehaviour::Background => {
                             // Exit just this process to pass its descendants to
                             // the next child subreaper, `litterbox wait` (the entrypoint).
-                            info!("Continuing orphaned processes in the background...");
+                            info!("Continuing background processes in the background.");
 
                             break;
                         }
@@ -143,8 +147,34 @@ impl Command {
                             // Explicitly kill the process and its children. Pid
                             // of 0 wouldn't work because orphaned processes
                             // have different group IDs.
-                            kill(Pid::from_raw(-1), Signal::SIGKILL)
-                                .context("Kill all child processes")?;
+
+                            kill(Pid::from_raw(-1), Signal::SIGTERM)
+                                .context("Kill child processes")?;
+
+                            let (tx, rx) = std::sync::mpsc::sync_channel(1);
+
+                            std::thread::spawn(move || {
+                                loop {
+                                    if let Err(nix::errno::Errno::ECHILD) = waitpid(None, None) {
+                                        debug!("All orphaned processes exited within 10 seconds");
+
+                                        break;
+                                    }
+                                }
+
+                                let _ = tx.try_send(());
+                            });
+
+                            if let Err(RecvTimeoutError::Timeout) =
+                                rx.recv_timeout(Duration::from_secs(10))
+                            {
+                                warn!(
+                                    "SIGTERM failed to kill background processes in 10 seconds, resorting to SIGKILL"
+                                );
+
+                                kill(Pid::from_raw(-1), Signal::SIGKILL)
+                                    .context("Kill child processes")?;
+                            }
 
                             break;
                         }
