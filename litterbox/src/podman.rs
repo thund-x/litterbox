@@ -9,13 +9,12 @@ use std::{
     fs,
     io::ErrorKind,
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
+    process::{Child, Command},
 };
 
 use crate::{
     env,
     files::{self, SshSockFile},
-    keys::Keys,
     settings::LitterboxSettings,
     utils::{extract_stdout, generate_name, trace_arguments},
 };
@@ -458,33 +457,6 @@ pub fn build_litterbox(lbx_name: &str) -> Result<()> {
     wait_for_podman(child)?;
 
     info!("Created container '{container_name}'.");
-    Ok(())
-}
-
-pub fn start_daemon(lbx_name: &str) -> Result<(), anyhow::Error> {
-    let keys = Keys::load()?;
-    let password = keys.password_if_needed(lbx_name)?;
-    let log_file_out = files::daemon_log_file(lbx_name)?;
-    let log_file_err = log_file_out.try_clone()?;
-    let mut cmd = Command::new(env::litterbox_binary_path());
-
-    cmd.args(["daemon", lbx_name]);
-    cmd.stdin(Stdio::piped());
-    cmd.stdout(Stdio::from(log_file_out));
-    cmd.stderr(Stdio::from(log_file_err));
-
-    let mut child = cmd.spawn().context("Failed to run Litterbox daemon")?;
-
-    if let Some(pwd) = password
-        && let Some(mut stdin) = child.stdin.take()
-    {
-        use std::io::Write;
-
-        stdin
-            .write_all(pwd.as_bytes())
-            .context("Failed to write password to daemon")?;
-    }
-
     Ok(())
 }
 

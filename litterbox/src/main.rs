@@ -16,8 +16,6 @@ mod settings;
 mod template;
 mod utils;
 
-use crate::{keys::Keys, utils::SU_BINARIES};
-
 /// Simple sandbox utility aimed at software development
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -30,7 +28,7 @@ fn main() -> anyhow::Result<()> {
     let arg0 = std::env::args().next();
 
     if let Some(arg0) = arg0.as_deref()
-        && SU_BINARIES.contains(&arg0)
+        && utils::SU_BINARIES.contains(&arg0)
     {
         eprintln!(
             "{arg0:?} is not supported inside this session. Use 'litterbox enter --root NAME' to enter as root."

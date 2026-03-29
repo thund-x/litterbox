@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use log::{debug, info};
-use nix::unistd::Pid;
+use nix::unistd::{Pid, Uid};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::{
@@ -34,21 +34,32 @@ pub fn settings_path(lbx_name: &str) -> Result<PathBuf> {
     path_relative_to_lbx_root(&format!("definitions/{lbx_name}.ron"))
 }
 
-pub fn daemon_lock_path(lbx_name: &str) -> Result<PathBuf> {
-    path_relative_to_lbx_root(&format!(".daemon-{lbx_name}.lock"))
-}
-
 pub fn session_lock_path(lbx_name: &str) -> Result<PathBuf> {
     path_relative_to_lbx_root(&format!(".session-{lbx_name}.lock"))
 }
 
-pub fn daemon_log_file(lbx_name: &str) -> Result<File> {
-    let path = path_relative_to_lbx_root(&format!("logs/daemon-{lbx_name}.log"))?;
-    let output_dir = path.parent().expect("Path should have parent.");
+/// Returns the runtime directory of litterbox. Any files placed there will be
+/// deleted on log out.
+///
+/// Note: Parent directories won't be created for you.
+pub fn lbx_runtime_dir() -> PathBuf {
+    let runtime_dir: PathBuf = std::env::var("XDG_RUNTIME_DIR")
+        .unwrap_or_else(|_| format!("/run/user/{}", Uid::current()))
+        .into();
 
-    fs::create_dir_all(output_dir)?;
+    runtime_dir.join("littebox")
+}
 
-    File::create(&path).context("Could not create daemon log file")
+/// Returns the state directory of litterbox.
+///
+/// Note: Parent directories won't be created for you.
+pub fn lbx_state_dir() -> PathBuf {
+    let home = std::env::var("HOME").expect("HOME environment variable should have been set");
+    let state_dir: PathBuf = std::env::var("XDG_STATE_HOME")
+        .unwrap_or_else(|_| format!("{home}/.local/state"))
+        .into();
+
+    state_dir.join("litterbox")
 }
 
 pub fn append_pid_to_session_lockfile(path: &Path, pid: Pid) -> Result<()> {
@@ -99,29 +110,6 @@ pub fn read_pids_from_session_lockfile(path: &Path) -> Result<Vec<Pid>> {
                 .map_err(anyhow::Error::from)
         })
         .collect()
-}
-
-pub fn cleanup_dead_pids_from_session_lockfile(path: &Path) -> Result<()> {
-    use nix::sys::signal::kill;
-
-    if !path.exists() {
-        return Ok(());
-    }
-
-    let pids = read_pids_from_session_lockfile(path)?;
-    let alive_pids = pids
-        .iter()
-        .copied()
-        .filter(|&pid| kill(pid, None).is_ok())
-        .collect::<Vec<_>>();
-
-    if pids == alive_pids {
-        return Ok(());
-    }
-
-    write_pids_to_session_lockfile(path, &alive_pids)?;
-
-    Ok(())
 }
 
 pub fn pipewire_socket_path() -> Result<PathBuf> {

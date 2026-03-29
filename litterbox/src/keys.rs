@@ -285,15 +285,6 @@ impl Keys {
         !self.attached_keys(lbx_name).is_empty()
     }
 
-    pub fn password_if_needed(&self, lbx_name: &str) -> Result<Option<String>> {
-        if self.has_attached_keys(lbx_name) {
-            let password = self.prompt_password()?;
-            Ok(Some(password))
-        } else {
-            Ok(None)
-        }
-    }
-
     pub async fn start_ssh_server(&self, lbx_name: &str, password: &str) -> Result<()> {
         let agent_state = Arc::new(AgentState::default());
         let agent_path = start_ssh_agent(lbx_name, agent_state.clone()).await?;

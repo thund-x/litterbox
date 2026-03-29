@@ -2,14 +2,12 @@ use crate::{
     daemon,
     entrypoint::{CommonEntrypointOptions, Interactive, Tty},
     files,
-    podman::{
-        get_container, is_container_running, start_daemon, wait_for_podman, wait_for_podman_async,
-    },
+    podman::{get_container, is_container_running, wait_for_podman, wait_for_podman_async},
     utils::trace_arguments,
 };
 use anyhow::{Context as _, Result, anyhow};
 use clap::Args;
-use log::{debug, info, warn};
+use log::{debug, info};
 use nix::unistd::{Pid, getgid, getuid};
 use std::{path::PathBuf, process::Stdio};
 
@@ -44,13 +42,7 @@ impl Command {
             .ok_or_else(|| anyhow!("No container found for '{}'", self.name))?;
         let container_id = container.id;
 
-        if !daemon::is_running(&self.name)? {
-            if is_container_running(&self.name)? {
-                warn!("Daemon was not running but container was. Restarting daemon...");
-            }
-
-            start_daemon(&self.name)?;
-        }
+        daemon::try_start_daemon()?;
 
         let my_pid = Pid::this();
         let session_lock = files::session_lock_path(&self.name)?;
